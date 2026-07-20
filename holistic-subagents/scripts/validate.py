@@ -1,40 +1,69 @@
 #!/usr/bin/env python3
-"""Validate the local holistic-subagents skill without installing it."""
+"""Validate the hybrid holistic-subagents Pi package."""
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
-from collections import Counter
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / "SKILL.md"
-SELECTION = ROOT / "references/model-selection.md"
-COMMANDS = ROOT / "references/model-commands.md"
-
-MODEL_THINKING_RE = re.compile(
-    r"`((?:openai-codex|deepseek|openrouter)/[^`]+)` com "
-    r"`(off|minimal|low|medium|high|xhigh|max)`"
-)
-COMMAND_RE = re.compile(
-    r"--model\s+(\S+)\s+\\\n\s+--thinking\s+"
-    r"(off|minimal|low|medium|high|xhigh|max)\b"
-)
+PACKAGE = ROOT / "package.json"
+SKILL = ROOT / "skills/holistic-subagents/SKILL.md"
+POLICY = ROOT / "src/models/policy.json"
 MARKDOWN_LINK_RE = re.compile(r"\[[^]]+\]\(([^)]+\.md)\)")
-FORBIDDEN_FLAGS = {
-    "--no-extensions",
-    "--no-skills",
-    "--no-context-files",
-    "--no-approve",
+ALLOWED_PROVIDERS = {"openai-codex", "deepseek"}
+ALLOWED_EFFORTS = ["low", "medium", "high"]
+REQUIRED_CALLBACKS = {
+    "HOLISTIC_QUESTION",
+    "HOLISTIC_INPUT_REQUIRED",
+    "HOLISTIC_HANDOFF_READY",
+}
+REQUIRED_HERDR_METHODS = {
+    "session.snapshot",
+    "agent.start",
+    "pane.send_input",
+    "pane.report_metadata",
+    "workspace.report_metadata",
+    "events.subscribe",
+    "worktree.create",
+    "worktree.remove",
 }
 
 
 def fail(message: str) -> None:
     print(f"ERROR: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"invalid JSON in {path.relative_to(ROOT)}: {error}")
+
+
+def validate_package() -> None:
+    package = load_json(PACKAGE)
+    if package.get("type") != "module":
+        fail("package.json must be an ESM package")
+    if "pi-package" not in package.get("keywords", []):
+        fail("package.json is missing pi-package keyword")
+    resources = package.get("pi", {})
+    expected = {
+        "extensions": ["./extensions/holistic-subagents.ts"],
+        "skills": ["./skills"],
+    }
+    for kind, paths in expected.items():
+        if resources.get(kind) != paths:
+            fail(f"package.json pi.{kind} must be {paths}")
+        for relative in paths:
+            if not (ROOT / relative).exists():
+                fail(f"missing package resource: {relative}")
 
 
 def validate_frontmatter() -> None:
@@ -50,89 +79,112 @@ def validate_frontmatter() -> None:
         for line in frontmatter.splitlines()
         if ":" in line
     }
-    missing = {"name", "description"} - fields
+    missing = {"name", "description", "compatibility"} - fields
     if missing:
         fail(f"SKILL.md missing frontmatter fields: {sorted(missing)}")
 
 
+def markdown_files() -> list[Path]:
+    files = [path for path in ROOT.glob("*.md") if path.is_file()]
+    files.extend(path for path in (ROOT / "skills").rglob("*.md"))
+    return files
+
+
 def validate_links() -> None:
-    for markdown in ROOT.rglob("*.md"):
+    for markdown in markdown_files():
         for target in MARKDOWN_LINK_RE.findall(markdown.read_text()):
+            if target.startswith(("http://", "https://")):
+                continue
             if not (markdown.parent / target).resolve().is_file():
                 fail(f"broken link in {markdown.relative_to(ROOT)}: {target}")
 
 
-def route_pairs() -> Counter[tuple[str, str]]:
-    pairs = Counter(MODEL_THINKING_RE.findall(SELECTION.read_text()))
-    if not pairs:
-        fail("no model/thinking routes found in model-selection.md")
-    return pairs
+def validate_policy() -> set[str]:
+    policy = load_json(POLICY)
+    if policy.get("version") != 1:
+        fail("unsupported model policy version")
+    if set(policy.get("providers", [])) != ALLOWED_PROVIDERS:
+        fail("model providers must be exactly OpenAI Codex and DeepSeek")
+    if policy.get("efforts") != ALLOWED_EFFORTS:
+        fail("model efforts must be exactly low, medium, high")
+    models: set[str] = set()
+    for model in policy.get("models", []):
+        model_id = model.get("id", "")
+        provider = model_id.split("/", 1)[0]
+        if provider not in ALLOWED_PROVIDERS:
+            fail(f"model outside provider allowlist: {model_id}")
+        if model_id in models:
+            fail(f"duplicate model in policy: {model_id}")
+        models.add(model_id)
+        thinking = model.get("thinkingMap", {})
+        if set(thinking) != set(ALLOWED_EFFORTS):
+            fail(f"incomplete thinking map: {model_id}")
+        if any(value not in ALLOWED_EFFORTS for value in thinking.values()):
+            fail(f"invalid thinking level: {model_id}")
+    if not models:
+        fail("model policy is empty")
+    if (ROOT / "skills/holistic-subagents/references/model-commands.md").exists():
+        fail("model-commands.md returned; launch argv must come from policy")
+    return models
 
 
-def command_pairs() -> Counter[tuple[str, str]]:
-    pairs = Counter(COMMAND_RE.findall(COMMANDS.read_text()))
-    if not pairs:
-        fail("no model commands found in model-commands.md")
-    return pairs
-
-
-def validate_routes() -> set[str]:
-    routes = route_pairs()
-    commands = command_pairs()
-    if routes != commands:
-        missing = routes - commands
-        extra = commands - routes
-        if missing:
-            print(f"Missing commands: {list(missing.elements())}", file=sys.stderr)
-        if extra:
-            print(f"Extra commands: {list(extra.elements())}", file=sys.stderr)
-        fail("model-selection.md and model-commands.md diverged")
-    return {model for model, _ in routes}
-
-
-def validate_removed_isolation_policy() -> None:
-    offenders: list[str] = []
-    for markdown in ROOT.rglob("*.md"):
-        text = markdown.read_text()
-        found = sorted(flag for flag in FORBIDDEN_FLAGS if flag in text)
-        if found:
-            offenders.append(f"{markdown.relative_to(ROOT)}: {', '.join(found)}")
-    if offenders:
-        fail("removed isolation flags returned:\n  " + "\n  ".join(offenders))
-
-
-def validate_handoff_protocol() -> None:
-    required = {
-        ROOT / "SKILL.md": (
-            "HOLISTIC_PARENT_PANE_ID",
-            "HOLISTIC_INPUT_REQUIRED",
-            "HOLISTIC_HANDOFF_READY",
-        ),
-        ROOT / "references/herdr-operations.md": (
-            "HOLISTIC_PARENT_PANE_ID",
-            "HOLISTIC_INPUT_REQUIRED",
-            "HOLISTIC_HANDOFF_READY",
-        ),
-        ROOT / "references/delegation-contract.md": (
-            "HOLISTIC_PARENT_PANE_ID",
-            "HOLISTIC_INPUT_REQUIRED",
-            "HOLISTIC_HANDOFF_READY",
-        ),
-    }
-    for path, markers in required.items():
+def validate_callbacks() -> None:
+    for path in (
+        SKILL,
+        ROOT / "skills/holistic-subagents/references/delegation-contract.md",
+    ):
         text = path.read_text()
-        missing = [marker for marker in markers if marker not in text]
+        missing = REQUIRED_CALLBACKS - {marker for marker in REQUIRED_CALLBACKS if marker in text}
         if missing:
-            fail(
-                f"handoff protocol incomplete in {path.relative_to(ROOT)}: "
-                f"{missing}"
-            )
-
-    operations = (ROOT / "references/herdr-operations.md").read_text()
-    orchestration_markers = ("wait -n", "yield_time_ms=1000", "polling")
-    missing = [marker for marker in orchestration_markers if marker not in operations]
+            fail(f"callback protocol incomplete in {path.relative_to(ROOT)}: {sorted(missing)}")
+    source = (ROOT / "src/protocol/callback.ts").read_text()
+    missing = REQUIRED_CALLBACKS - {marker for marker in REQUIRED_CALLBACKS if marker in source}
     if missing:
-        fail(f"event-driven wait guidance incomplete: {missing}")
+        fail(f"callback parser is incomplete: {sorted(missing)}")
+
+
+def collect_consts(value: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        const = value.get("const")
+        if isinstance(const, str):
+            found.add(const)
+        for child in value.values():
+            found.update(collect_consts(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.update(collect_consts(child))
+    return found
+
+
+def validate_herdr() -> None:
+    try:
+        integration = subprocess.run(
+            ["herdr", "integration", "status"],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        schema_result = subprocess.run(
+            ["herdr", "api", "schema", "--json"],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        fail(f"could not query Herdr: {error}")
+    pi_line = next(
+        (line for line in integration.stdout.splitlines() if line.startswith("pi:")),
+        "",
+    )
+    if not pi_line.startswith("pi: current"):
+        fail(f"Herdr Pi integration is not current: {pi_line or 'not found'}")
+    schema = json.loads(schema_result.stdout)
+    if int(schema.get("protocol", 0)) < 16:
+        fail(f"Herdr protocol is too old: {schema.get('protocol')}")
+    missing = REQUIRED_HERDR_METHODS - collect_consts(schema.get("schemas", {}).get("request", {}))
+    if missing:
+        fail(f"Herdr schema is missing required methods: {sorted(missing)}")
 
 
 def available_models() -> set[str]:
@@ -151,46 +203,27 @@ def available_models() -> set[str]:
     return models
 
 
-def validate_availability(allowed: set[str]) -> None:
+def validate_model_availability(allowed: set[str]) -> None:
     try:
         available = available_models()
     except (OSError, subprocess.CalledProcessError) as error:
         fail(f"could not query Pi models: {error}")
-    missing = sorted(allowed - available)
+    missing = allowed - available
     if missing:
-        fail(f"allowlisted models unavailable in Pi: {missing}")
-
-
-def validate_herdr_integration() -> None:
-    try:
-        result = subprocess.run(
-            ["herdr", "integration", "status"],
-            check=True,
-            text=True,
-            capture_output=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as error:
-        fail(f"could not query Herdr integrations: {error}")
-    pi_line = next(
-        (line for line in result.stdout.splitlines() if line.startswith("pi:")),
-        "",
-    )
-    if not pi_line.startswith("pi: current"):
-        fail(f"Herdr Pi integration is not current: {pi_line or 'not found'}")
+        fail(f"policy models unavailable in Pi: {sorted(missing)}")
 
 
 def main() -> None:
+    validate_package()
     validate_frontmatter()
     validate_links()
-    allowed = validate_routes()
-    validate_removed_isolation_policy()
-    validate_handoff_protocol()
-    validate_availability(allowed)
-    validate_herdr_integration()
+    models = validate_policy()
+    validate_callbacks()
+    validate_herdr()
+    validate_model_availability(models)
     print(
-        "OK: skill structure, links, routing commands, handoff protocol, "
-        "removed isolation flags, Herdr integration, and "
-        f"{len(allowed)} model IDs validated"
+        "OK: hybrid manifest, skill, links, callback protocol, Herdr socket API, "
+        f"and {len(models)} OpenAI/DeepSeek models validated"
     )
 
 

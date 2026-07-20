@@ -1,89 +1,74 @@
 # holistic-subagents
 
-Pacote local de skill para dar ao agente Pi principal liberdade de criar,
-supervisionar e conversar com sessões Pi auxiliares persistentes pelo Herdr.
+Pacote híbrido para Pi: uma skill decide quando e como delegar; uma extensão
+TypeScript executa delegações persistentes pelo socket do Herdr.
 
-Pode ser carregado diretamente com `--skill` ou instalado globalmente conforme
-as instruções abaixo.
+## Recursos
 
-## Conteúdo
+- lifecycle e event log persistidos na sessão Pi;
+- pane, tab e worktree sem foco;
+- callbacks autenticados para dúvidas, input obrigatório e handoff;
+- conversa e correção na mesma sessão filha;
+- policy OpenAI Codex/DeepSeek estruturada;
+- auditoria declarativa de autoridade e cleanup por ownership;
+- cinco tools `holistic_*` e dashboard `/holistic`.
 
-- `SKILL.md` — decisão autônoma e ciclo de orquestração;
-- `references/herdr-operations.md` — comandos de sessão e lifecycle;
-- `references/delegation-contract.md` — brief dinâmico, sem papéis fixos;
-- `references/model-selection.md` — tabela única de modelo por tipo de tarefa;
-- `references/model-commands.md` — comandos exatos, carregados sob demanda;
-- `references/worktrees-and-safety.md` — mutação, paralelismo, validação e cleanup.
+## Requisitos
 
-## Princípios
+- Node.js 22.19+ e Pi 0.79+;
+- Herdr com integração Pi current;
+- Pi iniciado dentro do Herdr (`HERDR_ENV=1`).
 
-- delegação opcional e decidida em runtime;
-- nenhuma lista fixa de subagentes;
-- modelo escolhido por tarefa dentro de uma allowlist local;
-- thinking escolhido pela mesma tabela orientada à tarefa;
-- sessões interativas e persistentes, não prompts one-shot;
-- filho sinaliza bloqueios ao principal com `[HOLISTIC_INPUT_REQUIRED]` e
-  encerra o turno para liberar o wait;
-- filho sinaliza conclusão ao principal com `[HOLISTIC_HANDOFF_READY]`;
-- callback desperta o pai; após dispatch ele encerra o turno em vez de vigiar
-  panes, processos ou arquivos;
-- espera síncrona é fallback: wait longo orientado a evento e `wait -n` para
-  vários filhos; timeout é health check, não polling;
-- agente principal continua responsável pelo resultado final.
-
-## Validação local
+## Desenvolvimento
 
 ```bash
-python holistic-subagents/scripts/validate.py
+npm install
+npm run typecheck
+npm test
+python scripts/validate.py
 ```
 
-O script confere frontmatter, links, tabela, comandos, allowlist, flags
-obsoletas, integração Herdr e disponibilidade local dos modelos. Não instala a
-skill.
-
-Resultados do último teste manual: [TEST_RESULTS.md](TEST_RESULTS.md).
-
-## Testar sem instalar
+Teste o pacote sem instalar:
 
 ```bash
-pi --skill /home/leo/Projects/pequenos-projetos/holistic-subagents
+pi --extension ./extensions/holistic-subagents.ts \
+  --skill ./skills/holistic-subagents
 ```
 
-Abra uma nova sessão Pi. Para forçar o carregamento durante um teste:
+## Instalação
 
-```text
-/skill:holistic-subagents
-```
-
-## Instalação global
+Local, mantendo vínculo com o checkout:
 
 ```bash
-mkdir -p ~/.pi/agent/skills
-cp -a /home/leo/Projects/pequenos-projetos/holistic-subagents \
-  ~/.pi/agent/skills/holistic-subagents
+pi install .
 ```
 
-Inicie uma nova sessão Pi para atualizar a descoberta de skills.
+Se uma cópia antiga da skill existir em `~/.pi/agent/skills/holistic-subagents`
+ou `~/.agents/skills/holistic-subagents`, mova-a para fora do diretório de
+skills. Manter as duas origens causa colisão e pode carregar a documentação
+antiga no lugar da skill do pacote.
 
-Valide a cópia instalada:
+Também é possível instalar a origem Git/NPM quando publicada. Abra uma nova
+sessão Pi após instalar e confirme `pi list` e `herdr integration status`.
 
-```bash
-python ~/.pi/agent/skills/holistic-subagents/scripts/validate.py
-```
+## Uso
 
-Para atualizar a instalação a partir desta fonte:
+A skill carrega sob demanda e orienta o agente a usar:
 
-```bash
-cp -a /home/leo/Projects/pequenos-projetos/holistic-subagents/. \
-  ~/.pi/agent/skills/holistic-subagents/
-```
+- `holistic_create`;
+- `holistic_list`;
+- `holistic_inspect`;
+- `holistic_send`;
+- `holistic_manage`.
 
-Depois, execute novamente o validador e abra uma nova sessão Pi.
+O usuário pode abrir `/holistic` para focar, inspecionar, responder, corrigir,
+aceitar ou limpar delegações. Sessões filhas não recebem tools coordenadoras e
+não podem delegar novamente.
 
-## Remoção
+## Segurança
 
-```bash
-rm -rf ~/.pi/agent/skills/holistic-subagents
-```
+Read-only é uma política instruída e auditada, não sandbox. Para garantia forte
+use isolamento externo. Worktrees sujas, branches não preservadas e metadata de
+ownership divergente bloqueiam cleanup.
 
-Depois da remoção, inicie outra sessão Pi.
+Resultados do último E2E: [TEST_RESULTS.md](TEST_RESULTS.md).
