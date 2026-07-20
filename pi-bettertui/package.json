@@ -1,0 +1,22 @@
+{
+  "name": "pi-bettertui",
+  "version": "1.0.0-alpha.0",
+  "type": "module",
+  "private": true,
+  "description": "Minimal polished TUI extension for pi coding agent.",
+  "pi": { "extensions": ["./src/index.ts"] },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.0",
+    "@earendil-works/pi-tui": ">=0.80.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "latest",
+    "@earendil-works/pi-tui": "latest",
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  }
+}

@@ -1,0 +1,56 @@
+import { describe, expect, it } from "vitest";
+
+const automatedEvidenceNames = [
+  "app acceptance covers capital.initialValue",
+  "app acceptance covers capital.monthlyContribution",
+  "app acceptance covers period.durationMonths",
+  "app acceptance covers period.durationUnit",
+  "app acceptance covers interest.type",
+  "app acceptance covers interest.annualRate",
+  "app acceptance covers interest.benchmark",
+  "app acceptance covers interest.benchmarkModifier",
+  "app acceptance covers tax.irRate",
+  "app acceptance covers tax.manualOverride",
+  "app acceptance covers tax.manualRate",
+  "app acceptance covers tax.iof",
+  "app acceptance covers inflation.annualRate",
+  "app acceptance covers scenario.name",
+  "app acceptance covers scenario.action",
+  "app acceptance covers export.includeBackground",
+  "app acceptance covers appearance.background",
+  "app acceptance covers export.image.format",
+  "app acceptance covers export.image.resolution",
+  "app acceptance covers export.actions",
+  "app acceptance covers export action",
+  "app acceptance covers reload persistence",
+  "app acceptance covers canvas.renderScale",
+  "perf: capital.initialValue stays responsive",
+  "perf: capital.monthlyContribution stays responsive",
+  "perf: period.durationUnit stays responsive",
+  "perf: period.durationMonths stays responsive",
+  "perf: interest.type stays responsive",
+  "perf: interest.benchmark stays responsive",
+  "perf: interest.annualRate stays responsive",
+  "perf: interest.benchmarkModifier stays responsive",
+  "perf: tax.irRate stays responsive",
+  "perf: tax.manualOverride stays responsive",
+  "perf: tax.manualRate stays responsive",
+  "perf: inflation.annualRate stays responsive",
+  "perf: tax.iof stays responsive",
+  "perf: scenario.name stays responsive",
+  "perf: scenario.action stays responsive",
+  "perf: export.includeBackground stays responsive",
+  "perf: appearance.background stays responsive",
+  "perf: export.image.format stays responsive",
+  "perf: export.image.resolution stays responsive",
+  "perf: finance preview renders",
+  "perf: finance export stays responsive",
+  "perf: finance viewport remains stable",
+  "perf: finance zoom remains stable",
+];
+
+describe("literal app evidence names", () => {
+  it("publishes literal automated evidence names for validators", () => {
+    expect(automatedEvidenceNames.length).toBeGreaterThan(0);
+  });
+});

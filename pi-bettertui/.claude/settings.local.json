@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/leo/.pi/**)",
+      "Bash(pi --version)",
+      "WebFetch(domain:github.com)",
+      "Bash(pi --help)",
+      "Bash(curl -s https://api.github.com/repos/mike-heunher/pipane)",
+      "Bash(curl -s https://api.github.com/repos/mike-heunher/pipane/contents)",
+      "Bash(curl -s https://api.github.com/repos/mike-heunher/pipane/contents/extensions)",
+      "Bash(curl -s https://raw.githubusercontent.com/mike-heunher/pipane/main/README.md)",
+      "Bash(mise which *)",
+      "Bash(curl -s https://api.github.com/repos/visua1hue/pi-pane)",
+      "Bash(curl -s \"https://api.github.com/repos/visua1hue/pi-pane/git/trees/main?recursive=1\")",
+      "Read(//home/leo/.config/omarchy/current/**)",
+      "Read(//home/leo/.config/omarchy/current/theme/**)",
+      "Read(//home/leo/.config/omarchy/hooks/**)",
+      "Read(//home/leo/.config/omarchy/**)",
+      "Read(//home/leo/.local/bin/**)"
+    ]
+  }
+}

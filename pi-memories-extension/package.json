@@ -1,0 +1,27 @@
+{
+  "name": "pi-memories-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Markdown memory extension for Pi coding agent.",
+  "keywords": ["pi-package", "pi-extension", "memory"],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "echo 'no build needed; pi loads TypeScript via jiti'"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@types/node": "^22.10.0",
+    "typebox": "*",
+    "typescript": "^5.7.2"
+  }
+}
