@@ -26,6 +26,9 @@ REQUIRED_CALLBACKS = {
 REQUIRED_HERDR_METHODS = {
     "session.snapshot",
     "agent.start",
+    "agent.prompt",
+    "pane.split",
+    "pane.process_info",
     "pane.send_input",
     "pane.report_metadata",
     "workspace.report_metadata",
@@ -180,7 +183,7 @@ def validate_herdr() -> None:
     if not pi_line.startswith("pi: current"):
         fail(f"Herdr Pi integration is not current: {pi_line or 'not found'}")
     schema = json.loads(schema_result.stdout)
-    if int(schema.get("protocol", 0)) < 16:
+    if int(schema.get("protocol", 0)) < 17:
         fail(f"Herdr protocol is too old: {schema.get('protocol')}")
     missing = REQUIRED_HERDR_METHODS - collect_consts(schema.get("schemas", {}).get("request", {}))
     if missing:

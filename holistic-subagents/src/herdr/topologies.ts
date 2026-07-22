@@ -2,7 +2,8 @@ import type {
   DelegationResource,
   DelegationTopology,
 } from "../domain/types.ts";
-import type { HerdrRequestOptions } from "./client.ts";
+import { HerdrRequestError, type HerdrRequestOptions } from "./client.ts";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 export interface HerdrRequester {
@@ -20,6 +21,7 @@ export interface LaunchSpec {
   name: string;
   cwd: string;
   topology: DelegationTopology;
+  parentPaneId: string;
   parentWorkspaceId: string;
   parentTabId: string;
   argv: string[];
@@ -46,12 +48,24 @@ interface AgentInfo {
   tab_id: string;
   workspace_id: string;
   agent_status?: string;
+  agent_session?: unknown;
+  interactive_ready?: boolean;
   cwd?: string | null;
 }
 
 interface AgentStartedResult {
   type: "agent_started";
   agent: AgentInfo;
+}
+
+interface AgentInfoResult {
+  type: "agent_info";
+  agent: AgentInfo;
+}
+
+interface PaneCreatedResult {
+  type: "pane_info";
+  pane: AgentInfo;
 }
 
 interface TabCreatedResult {
@@ -98,6 +112,24 @@ export class HerdrTopologyManager {
     let targetTabId = spec.parentTabId;
     let targetCwd = spec.cwd;
     let initialPaneId: string | undefined;
+
+    if (spec.topology === "pane") {
+      const created = await this.#client.request<PaneCreatedResult>(
+        "pane.split",
+        {
+          target_pane_id: spec.parentPaneId,
+          direction: spec.split ?? "right",
+          cwd: spec.cwd,
+          env: spec.env,
+          focus: false,
+        },
+        { signal, timeoutMs: 30_000 },
+      );
+      initialPaneId = created.pane.pane_id;
+      targetTabId = created.pane.tab_id;
+      targetWorkspaceId = created.pane.workspace_id;
+      await add({ kind: "pane", id: initialPaneId, label: spec.name });
+    }
 
     if (spec.topology === "tab") {
       const created = await this.#client.request<TabCreatedResult>(
@@ -152,23 +184,23 @@ export class HerdrTopologyManager {
           path: created.worktree.path,
         });
       }
+      await this.#installEnvironment(initialPaneId, targetCwd, spec.env, signal);
     }
 
-    const started = await this.#client.request<AgentStartedResult>(
-      "agent.start",
-      {
-        name: spec.name,
-        argv: spec.argv,
-        cwd: targetCwd,
-        env: spec.env,
-        workspace_id: targetWorkspaceId,
-        tab_id: targetTabId,
-        split: spec.topology === "pane" ? (spec.split ?? "right") : null,
-        focus: false,
-      },
-      { signal, timeoutMs: 30_000 },
+    if (!initialPaneId) throw new Error(`Unsupported Herdr topology: ${spec.topology}`);
+    const [executable, ...args] = spec.argv;
+    if (executable !== "pi") {
+      throw new Error(`Unsupported Herdr agent executable: ${executable ?? "missing"}`);
+    }
+    const targetName = agentName(spec.name, spec.delegationId);
+    const started = await this.#startAgent(
+      initialPaneId,
+      targetName,
+      args,
+      spec.startupTimeoutMs ?? 90_000,
+      signal,
     );
-    const agent = started.agent;
+    const agent = await this.#waitForIntegratedAgent(targetName, started.agent, signal);
     await add({ kind: "pane", id: agent.pane_id, label: spec.name });
     await add({ kind: "process", id: agent.pane_id, label: "pi" });
 
@@ -178,29 +210,12 @@ export class HerdrTopologyManager {
     if (spec.topology === "worktree") {
       await this.#tagWorkspaceOwnership(agent.workspace_id, spec, signal);
     }
-    await this.#waitUntilReady(
-      agent,
-      spec.startupTimeoutMs ?? 90_000,
-      signal,
-    );
     await this.#client.request(
-      "pane.send_input",
+      "agent.prompt",
       {
-        pane_id: agent.pane_id,
+        target: targetName,
         text: typeof spec.brief === "function" ? spec.brief(targetCwd) : spec.brief,
-        keys: ["enter"],
-      },
-      { signal },
-    );
-    await this.#client.request(
-      "events.wait",
-      {
-        match_event: {
-          event: "pane_agent_status_changed",
-          pane_id: agent.pane_id,
-          agent_status: "working",
-        },
-        timeout_ms: 30_000,
+        wait: { until: ["working"], timeout_ms: 30_000 },
       },
       { signal, timeoutMs: 35_000 },
     );
@@ -236,6 +251,56 @@ export class HerdrTopologyManager {
     );
   }
 
+  async #waitForIntegratedAgent(
+    target: string,
+    initial: AgentInfo,
+    signal?: AbortSignal,
+  ): Promise<AgentInfo> {
+    if (initial.interactive_ready && initial.agent_session) return initial;
+    // Herdr 0.7.5 can finish agent.start just before Pi's session hook report.
+    // Bound this startup barrier; normal supervision remains event-driven.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await delay(250, signal);
+      const result = await this.#client.request<AgentInfoResult>(
+        "agent.get",
+        { target },
+        { signal, timeoutMs: 5_000 },
+      );
+      if (result.agent.interactive_ready && result.agent.agent_session) return result.agent;
+    }
+    throw new Error(`Herdr agent ${target} did not publish an interactive Pi session`);
+  }
+
+  async #startAgent(
+    paneId: string,
+    name: string,
+    args: string[],
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<AgentStartedResult> {
+    // A freshly created pane can precede Herdr's foreground-shell snapshot.
+    // Retry only that explicit transient; all other launch failures remain fatal.
+    for (let attempt = 0; ; attempt += 1) {
+      await this.#client.request(
+        "pane.process_info",
+        { pane_id: paneId },
+        { signal, timeoutMs: 5_000 },
+      );
+      try {
+        return await this.#client.request<AgentStartedResult>(
+          "agent.start",
+          { name, kind: "pi", pane_id: paneId, args, timeout_ms: timeoutMs },
+          { signal, timeoutMs: timeoutMs + 2_000 },
+        );
+      } catch (error) {
+        if (!(error instanceof HerdrRequestError) || error.code !== "agent_pane_busy" || attempt >= 19) {
+          throw error;
+        }
+        await delay(100, signal);
+      }
+    }
+  }
+
   async #tagWorkspaceOwnership(
     workspaceId: string,
     spec: LaunchSpec,
@@ -253,40 +318,67 @@ export class HerdrTopologyManager {
     );
   }
 
-  async #waitUntilReady(
-    agent: AgentInfo,
-    timeoutMs: number,
+  async #installEnvironment(
+    paneId: string,
+    cwd: string,
+    env: Record<string, string>,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (agent.agent_status !== "idle") {
-      await this.#client.request(
-        "events.wait",
-        {
-          match_event: {
-            event: "pane_agent_status_changed",
-            pane_id: agent.pane_id,
-            agent_status: "idle",
-          },
-          timeout_ms: timeoutMs,
-        },
-        { signal, timeoutMs: timeoutMs + 2_000 },
-      );
+    for (const key of Object.keys(env)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        throw new Error(`Invalid child environment key: ${key}`);
+      }
     }
+    const marker = `HOLISTIC_ENV_READY_${randomUUID()}`;
+    const exports = Object.entries(env)
+      .map(([key, value]) => `${key}=${shellQuote(value)}`)
+      .join(" ");
+    await this.#client.request(
+      "pane.send_input",
+      {
+        pane_id: paneId,
+        text: `cd -- ${shellQuote(cwd)} && export ${exports} && printf '%s\\n' ${shellQuote(marker)}`,
+        keys: ["enter"],
+      },
+      { signal },
+    );
     await this.#client.request(
       "pane.wait_for_output",
       {
-        pane_id: agent.pane_id,
-        source: "visible",
-        lines: 80,
-        match: {
-          type: "regex",
-          value: "Welcome back!|Type your message|ctrl\\+",
-        },
-        timeout_ms: timeoutMs,
+        pane_id: paneId,
+        source: "recent_unwrapped",
+        lines: 40,
+        match: { type: "substring", value: marker },
+        timeout_ms: 10_000,
       },
-      { signal, timeoutMs: timeoutMs + 2_000 },
+      { signal, timeoutMs: 12_000 },
     );
   }
+}
+
+function agentName(name: string, delegationId: string): string {
+  const base = slug(name).slice(0, 20) || "task";
+  return `${base}-${delegationId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8).toLowerCase()}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function slug(value: string): string {

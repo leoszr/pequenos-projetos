@@ -70,7 +70,7 @@ export class HerdrClient {
     if (!socketPath) throw new Error("HERDR_SOCKET_PATH is required");
     this.#socketPath = socketPath;
     this.#options = {
-      minimumProtocol: options.minimumProtocol ?? 16,
+      minimumProtocol: options.minimumProtocol ?? 17,
       requestTimeoutMs: options.requestTimeoutMs ?? 5_000,
       connectTimeoutMs: options.connectTimeoutMs ?? 2_000,
     };

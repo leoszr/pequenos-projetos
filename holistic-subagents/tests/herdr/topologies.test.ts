@@ -14,6 +14,7 @@ function spec(topology: "pane" | "tab" | "worktree"): LaunchSpec {
     name: "Implement cache",
     cwd: "/repo",
     topology,
+    parentPaneId: "p-parent",
     parentWorkspaceId: "w-parent",
     parentTabId: "t-parent",
     argv: ["pi", "--model", "openai-codex/model"],
@@ -43,14 +44,22 @@ function requester(topology: "pane" | "tab" | "worktree") {
         worktree: { path: "/repo-wt", branch: "agent/cache" },
       };
     }
+    if (method === "pane.split") {
+      return {
+        type: "pane_info",
+        pane: { pane_id: "p-agent", tab_id: "t-parent", workspace_id: "w-parent" },
+      };
+    }
     if (method === "agent.start") {
       return {
         type: "agent_started",
         agent: {
-          pane_id: "p-agent",
+          pane_id: topology === "pane" ? "p-agent" : "p-root",
           tab_id: topology === "pane" ? "t-parent" : "t-new",
           workspace_id: topology === "worktree" ? "w-new" : "w-parent",
           agent_status: "idle",
+          interactive_ready: true,
+          agent_session: { agent: "pi", value: "/tmp/session.jsonl" },
         },
       };
     }
@@ -66,8 +75,14 @@ describe("HerdrTopologyManager", () => {
     const result = await new HerdrTopologyManager(client).launch(input);
     expect(result.paneId).toBe("p-agent");
     expect(input.onResource).toHaveBeenCalledWith(expect.objectContaining({ kind: "pane" }));
-    expect(client.methods.indexOf("agent.start")).toBeLessThan(client.methods.indexOf("pane.send_input"));
+    expect(client.methods.slice(0, 3)).toEqual(["pane.split", "pane.process_info", "agent.start"]);
+    expect(client.methods.indexOf("agent.start")).toBeLessThan(client.methods.indexOf("agent.prompt"));
     expect(client.methods).toContain("pane.report_metadata");
+    expect(client.request).toHaveBeenCalledWith(
+      "agent.start",
+      expect.objectContaining({ kind: "pi", pane_id: "p-agent", args: input.argv.slice(1) }),
+      expect.anything(),
+    );
   });
 
   it("creates a tab before starting Pi", async () => {
@@ -75,8 +90,8 @@ describe("HerdrTopologyManager", () => {
     const input = spec("tab");
     const result = await new HerdrTopologyManager(client).launch(input);
     expect(result.tabId).toBe("t-new");
-    expect(client.methods.slice(0, 2)).toEqual(["tab.create", "agent.start"]);
-    expect(client.methods.filter((method) => method === "pane.report_metadata")).toHaveLength(2);
+    expect(client.methods.slice(0, 3)).toEqual(["tab.create", "pane.process_info", "agent.start"]);
+    expect(client.methods.filter((method) => method === "pane.report_metadata")).toHaveLength(1);
     expect(input.onResource).toHaveBeenCalledWith(expect.objectContaining({ kind: "tab", id: "t-new" }));
   });
 
@@ -91,10 +106,10 @@ describe("HerdrTopologyManager", () => {
       "pane",
       "worktree",
       "branch",
-      "pane",
       "process",
     ]);
     expect(client.methods).toContain("workspace.report_metadata");
+    expect(client.methods).toContain("pane.wait_for_output");
   });
 
   it("preserves a nested cwd inside a worktree checkout", async () => {
@@ -104,8 +119,9 @@ describe("HerdrTopologyManager", () => {
     expect(result.cwd).toBe("/repo-wt/holistic-subagents");
     expect(client.request).toHaveBeenCalledWith(
       "agent.start",
-      expect.objectContaining({ cwd: "/repo-wt/holistic-subagents" }),
+      expect.objectContaining({ kind: "pi", pane_id: "p-root" }),
       expect.anything(),
     );
+    expect(result.cwd).toBe("/repo-wt/holistic-subagents");
   });
 });

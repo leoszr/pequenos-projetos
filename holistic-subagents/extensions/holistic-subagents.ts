@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { registerHolisticDashboard } from "../src/pi/dashboard.ts";
+import { registerHolisticMode } from "../src/pi/mode.ts";
 import { createCoordinatorRuntime, type CoordinatorRuntime } from "../src/pi/runtime.ts";
 import { updateHolisticStatus } from "../src/pi/status.ts";
 import { registerHolisticTools } from "../src/pi/tools.ts";
@@ -14,6 +15,7 @@ export default function holisticSubagents(pi: ExtensionAPI): void {
   }
   if (!coordinatorEnabled()) return;
 
+  const mode = registerHolisticMode(pi);
   let runtime: CoordinatorRuntime | undefined;
   let currentContext: Parameters<typeof updateHolisticStatus>[0] | undefined;
   const service = () => {
@@ -25,7 +27,7 @@ export default function holisticSubagents(pi: ExtensionAPI): void {
     if (currentContext) updateHolisticStatus(currentContext, runtime?.service);
   };
 
-  registerHolisticTools(pi, service, refresh);
+  registerHolisticTools(pi, service, refresh, mode.isEnabled);
   registerHolisticDashboard(pi, service, (ctx) => updateHolisticStatus(ctx, runtime?.service));
 
   const initialize = async (ctx: Parameters<typeof updateHolisticStatus>[0]) => {

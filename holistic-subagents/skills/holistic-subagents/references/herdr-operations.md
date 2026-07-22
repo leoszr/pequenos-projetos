@@ -19,11 +19,13 @@ assina eventos. Não derive IDs de labels ou layout.
 
 ## Operações materializadas
 
-- pane: `agent.start` com split no tab atual;
-- tab: `tab.create` seguido de `agent.start` sem foco;
-- worktree: `worktree.create` seguido de `agent.start` no workspace retornado;
-- startup: espera orientada a evento por `idle`, uma confirmação da TUI e envio
-  do brief por `pane.send_input`;
+- pane: `pane.split` no pane pai, seguido de `agent.start` no pane retornado;
+- tab: `tab.create` e `agent.start` no root pane retornado;
+- worktree: `worktree.create`, instalação do ambiente no shell e `agent.start`
+  no root pane retornado;
+- startup: `agent.start` aguarda prontidão, uma barreira limitada confirma o
+  session hook do Pi, e `agent.prompt` envia o brief atomicamente aguardando
+  `working`;
 - runtime: subscription de status e callbacks semânticos autenticados;
 - cleanup: `pane.close`, `tab.close` ou `worktree.remove`, conforme o ledger.
 
@@ -47,12 +49,12 @@ crash ou ownership divergente.
 ```bash
 herdr pane get <pane-id>
 herdr pane read <pane-id> --source recent-unwrapped --lines 160
-herdr wait agent-status <pane-id> --status idle --timeout 600000
+herdr agent wait <pane-id> --until idle --until done --timeout 600000
 ```
 
 Para vários waits manuais, faça fan-in em um processo e use `wait -n`; não abra
-várias sessões de shell para consultar em loop. `herdr agent send` não submete
-Enter; callbacks e follow-ups usam `pane.send_input`/`pane run`.
+várias sessões de shell para consultar em loop. Callbacks e follow-ups usam
+`agent prompt`; `agent send-keys` fica reservado para teclas lógicas da TUI.
 
 O CLI instalado e `herdr api schema --json` são a autoridade quando a sintaxe
 ou protocol mudar.

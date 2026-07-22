@@ -124,6 +124,7 @@ export class DelegationService {
           name: request.name,
           cwd: request.cwd,
           topology: request.topology,
+          parentPaneId: this.#identity.parentPaneId,
           parentWorkspaceId: this.#identity.parentWorkspaceId,
           parentTabId: this.#identity.parentTabId,
           argv: buildPiArgv(delegation),
@@ -229,8 +230,8 @@ export class DelegationService {
         this.#repository.save(delegation, "transition");
       }
       await this.#herdr.request(
-        "pane.send_input",
-        { pane_id: primaryPaneId(delegation), text: message, keys: ["enter"] },
+        "agent.prompt",
+        { target: primaryPaneId(delegation), text: message },
         { signal },
       );
       const now = new Date().toISOString();

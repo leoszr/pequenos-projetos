@@ -38,7 +38,7 @@ describe("Herdr reconciliation", () => {
   it("marks missing active panes as failed and finds orphans", () => {
     const repository = repo();
     const result = reconcileSnapshot(repository, {
-      protocol: 16,
+    protocol: 17,
       panes: [{
         pane_id: "orphan",
         workspace_id: "w",

@@ -50,21 +50,21 @@ describe("HerdrClient", () => {
   it("handshakes and parses fragmented responses", async () => {
     const path = await fakeHerdr((request, socket) => {
       const result = request.method === "session.snapshot"
-        ? { snapshot: { protocol: 16, version: "test", panes: [] } }
+        ? { snapshot: { protocol: 17, version: "test", panes: [] } }
         : { value: 42 };
       const line = `${JSON.stringify({ id: request.id, result })}\n`;
       socket.write(line.slice(0, 5));
       socket.write(line.slice(5));
     });
     const client = new HerdrClient(path);
-    expect((await client.connect()).protocol).toBe(16);
+    expect((await client.connect()).protocol).toBe(17);
     await expect(client.request("test.echo")).resolves.toEqual({ value: 42 });
     client.close();
   });
 
   it("rejects an incompatible protocol", async () => {
     const path = await fakeHerdr((request, socket) => {
-      respond(socket, request.id, { snapshot: { protocol: 15 } });
+      respond(socket, request.id, { snapshot: { protocol: 16 } });
     });
     const client = new HerdrClient(path);
     await expect(client.connect()).rejects.toBeInstanceOf(HerdrProtocolError);
@@ -74,7 +74,7 @@ describe("HerdrClient", () => {
   it("delivers subscribed events", async () => {
     const path = await fakeHerdr((request, socket) => {
       if (request.method === "session.snapshot") {
-        respond(socket, request.id, { snapshot: { protocol: 16 } });
+        respond(socket, request.id, { snapshot: { protocol: 17 } });
       } else {
         respond(socket, request.id, { subscribed: true });
         socket.write(`${JSON.stringify({ event: "pane.agent_status_changed", data: { pane_id: "p1" } })}\n`);
@@ -93,7 +93,7 @@ describe("HerdrClient", () => {
   it("supports timeout and abort", async () => {
     const path = await fakeHerdr((request, socket) => {
       if (request.method === "session.snapshot") {
-        respond(socket, request.id, { snapshot: { protocol: 16 } });
+        respond(socket, request.id, { snapshot: { protocol: 17 } });
       }
     });
     const client = new HerdrClient(path, { requestTimeoutMs: 20 });

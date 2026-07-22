@@ -19,8 +19,11 @@ function request(): DelegationRequest {
 function service() {
   const repository = new DelegationRepository(new InMemoryDelegationStore());
   const requestMock = vi.fn(async (method: string) => {
+    if (method === "pane.split") {
+      return { type: "pane_info", pane: { pane_id: "p1", tab_id: "t1", workspace_id: "w1" } };
+    }
     if (method === "agent.start") {
-      return { type: "agent_started", agent: { pane_id: "p1", tab_id: "t1", workspace_id: "w1", agent_status: "idle" } };
+      return { type: "agent_started", agent: { pane_id: "p1", tab_id: "t1", workspace_id: "w1", agent_status: "idle", interactive_ready: true, agent_session: { agent: "pi", value: "/tmp/session.jsonl" } } };
     }
     if (method === "pane.get") return { pane: { tokens: {} } };
     if (method === "pane.read") return { read: { text: "handoff evidence" } };
@@ -61,8 +64,8 @@ describe("DelegationService", () => {
     expect(delegation.state).toBe("working");
     expect(delegation.resources.some((resource) => resource.kind === "pane")).toBe(true);
     expect(fixture.requestMock).toHaveBeenCalledWith(
-      "pane.send_input",
-      expect.objectContaining({ pane_id: "p1" }),
+      "agent.prompt",
+      expect.objectContaining({ target: expect.stringMatching(/^task-/) }),
       expect.anything(),
     );
   });

@@ -1,5 +1,12 @@
 # Resultados de teste
 
+## Compatibilidade Herdr 0.7.5
+
+Auditoria em 2026-07-21 contra o CLI/schema local (protocol 17), documentação
+oficial e release v0.7.5. O fluxo real `pane.split -> agent.start ->
+agent.prompt` iniciou Pi, observou `working` e removeu o pane criado. A suíte
+automatizada completa também passou após a migração.
+
 Data: 2026-07-20
 
 Ambiente: Pi 0.80.x, Herdr 0.7.4/protocol 16, repositório Git real e sessões Pi

@@ -17,6 +17,7 @@ export function registerHolisticTools(
   pi: ExtensionAPI,
   getService: () => DelegationService,
   onChange: () => void = () => undefined,
+  canCreate: () => boolean = () => true,
 ): void {
   pi.registerTool({
     name: "holistic_create",
@@ -51,6 +52,9 @@ export function registerHolisticTools(
       avoidProvider: Type.Optional(Type.Union([Type.Literal("openai-codex"), Type.Literal("deepseek")])),
     }, { additionalProperties: false }),
     async execute(_id, params, signal) {
+      if (!canCreate()) {
+        return toolError(new Error("Subagent mode is off. Enable it before creating a delegation."));
+      }
       const request: DelegationRequest = {
         name: params.name,
         mission: params.mission,

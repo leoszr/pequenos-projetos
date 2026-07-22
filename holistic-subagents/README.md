@@ -11,12 +11,12 @@ TypeScript executa delegações persistentes pelo socket do Herdr.
 - conversa e correção na mesma sessão filha;
 - policy OpenAI Codex/DeepSeek estruturada;
 - auditoria declarativa de autoridade e cleanup por ownership;
-- cinco tools `holistic_*` e dashboard `/holistic`.
+- cinco tools `holistic_*`, dashboard `/holistic` e modo de delegação opt-in.
 
 ## Requisitos
 
 - Node.js 22.19+ e Pi 0.79+;
-- Herdr com integração Pi current;
+- Herdr 0.7.5+/protocol 17 com integração Pi current;
 - Pi iniciado dentro do Herdr (`HERDR_ENV=1`).
 
 ## Desenvolvimento
@@ -53,7 +53,17 @@ sessão Pi após instalar e confirme `pi list` e `herdr integration status`.
 
 ## Uso
 
-A skill carrega sob demanda e orienta o agente a usar:
+O modo de subagents começa **desligado**. Nesse estado, as tools e a skill de
+delegação são retiradas do prompt do pai, em vez de apenas bloquear o spawn.
+Ative ou desative com `Ctrl+Shift+S`. O comando abaixo serve como fallback para
+terminais que não distinguem `Ctrl+Shift+S` de `Ctrl+S`:
+
+```text
+/holistic-mode [on|off|toggle|status]
+```
+
+O estado acompanha a sessão Pi. Quando o modo está ativo, a skill carrega sob
+demanda e orienta o agente a usar:
 
 - `holistic_create`;
 - `holistic_list`;
@@ -62,8 +72,8 @@ A skill carrega sob demanda e orienta o agente a usar:
 - `holistic_manage`.
 
 O usuário pode abrir `/holistic` para focar, inspecionar, responder, corrigir,
-aceitar ou limpar delegações. Sessões filhas não recebem tools coordenadoras e
-não podem delegar novamente.
+aceitar ou limpar delegações, inclusive com o modo desligado. Sessões filhas não
+recebem tools coordenadoras e não podem delegar novamente.
 
 ## Segurança
 

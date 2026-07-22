@@ -102,12 +102,12 @@ Fluxo de criação:
 1. validar ambiente, request, autoridade e política de modelo;
 2. registrar `prepared` antes de criar qualquer recurso;
 3. materializar pane, tab ou worktree e registrar imediatamente cada recurso;
-4. iniciar Pi com `agent.start`, usando `argv` e `env` estruturados, sem shell
-   quoting e sem prompt one-shot;
+4. criar o destino com `pane.split`, `tab.create` ou `worktree.create` e iniciar
+   Pi com `agent.start --kind pi --pane`, usando argumentos estruturados;
 5. injetar depth, parent pane/session, delegation ID, callback token e política
    de autoridade do filho;
-6. aguardar eventos de estado e uma confirmação única de TUI pronta;
-7. enviar o brief com `pane.send_input` e confirmar `working`;
+6. deixar `agent.start` confirmar a prontidão interativa;
+7. enviar o brief atomicamente com `agent.prompt` e confirmar `working`;
 8. manter subscription para mudança de estado, saída/fechamento inesperado e
    recursos removidos, sem polling.
 
