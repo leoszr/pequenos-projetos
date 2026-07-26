@@ -50,7 +50,8 @@ export interface IndependenceRequirement {
 
 export interface ModelRequest {
   minimumCapability: Capability;
-  effort: CanonicalEffort;
+  effort?: CanonicalEffort;
+  purpose?: DelegationPurpose;
   requirements?: TechnicalRequirements;
   independence?: IndependenceRequirement;
   allowDegraded?: boolean;
@@ -67,6 +68,9 @@ export interface ModelResolution {
   exactThinking: boolean;
   alternatives: string[];
   reason: string;
+  requestedEffort: CanonicalEffort | "auto";
+  effectiveEffort: CanonicalEffort;
+  purpose: DelegationPurpose;
 }
 
 export interface DelegationRequest {

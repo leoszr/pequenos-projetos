@@ -11,7 +11,7 @@ brief interativo.
 - `authority.mode`, paths permitidos/proibidos;
 - `acceptanceEvidence`;
 - `topology`;
-- capacidade mínima e esforço;
+- `minimumCapability` e `effort=auto|low|medium|high`;
 - `purpose=verification` + `reviewOf` quando revisar outro trabalho.
 
 O filho deve retornar resultado, evidências, comandos executados, arquivos ou

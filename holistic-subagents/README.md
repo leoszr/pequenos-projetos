@@ -9,7 +9,10 @@ TypeScript executa delegações persistentes pelo socket do Herdr.
 - pane, tab e worktree sem foco;
 - callbacks autenticados para dúvidas, input obrigatório e handoff;
 - conversa e correção na mesma sessão filha;
-- policy OpenAI Codex/DeepSeek estruturada;
+- capacidade semântica, policy OpenAI Codex/DeepSeek estruturada e
+  `effort=auto|low|medium|high`;
+- DeepSeek V4 Pro priorizado para workers transversais e GPT-5.6 Sol exclusivo
+  para verification;
 - auditoria declarativa de autoridade e cleanup por ownership;
 - cinco tools `holistic_*`, dashboard `/holistic` e modo de delegação opt-in.
 

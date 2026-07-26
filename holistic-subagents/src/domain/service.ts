@@ -78,7 +78,10 @@ export class DelegationService {
   async create(request: DelegationRequest, signal?: AbortSignal): Promise<Delegation> {
     validateDelegationRequest(request);
     assertAuthorityPreconditions(request.authority);
-    const resolution = resolveModel(request.model, this.#availableModels());
+    const resolution = resolveModel(
+      { ...request.model, purpose: request.purpose ?? "execution" },
+      this.#availableModels(),
+    );
     const now = new Date().toISOString();
     let delegation: Delegation = {
       version: STORE_VERSION,

@@ -12,7 +12,7 @@ function request(): DelegationRequest {
     authority: { mode: "read_only", allowedPaths: [] },
     acceptanceEvidence: ["answer"],
     topology: "pane",
-    model: { minimumCapability: "scoped", effort: "medium" },
+    model: { minimumCapability: "scoped" },
   };
 }
 
@@ -52,6 +52,7 @@ function service() {
       },
       availableModels: () => [
         { provider: "openai-codex", id: "gpt-5.6-luna", contextWindow: 200_000, input: ["text", "image"] },
+        { provider: "openai-codex", id: "gpt-5.6-sol", contextWindow: 200_000, input: ["text", "image"] },
       ],
     }),
   };
@@ -77,5 +78,21 @@ describe("DelegationService", () => {
     await expect(fixture.value.manage(delegation.id, "accept")).rejects.toThrow("Inspect evidence");
     await fixture.value.inspect(delegation.id);
     expect((await fixture.value.manage(delegation.id, "accept")).state).toBe("accepted");
+  });
+
+  it("passes verification purpose to model routing", async () => {
+    const fixture = service();
+    const original = await fixture.value.create(request());
+    const reviewer = await fixture.value.create({
+      ...request(),
+      name: "review",
+      purpose: "verification",
+      reviewOf: original.id,
+    });
+    expect(reviewer.modelResolution).toMatchObject({
+      model: "openai-codex/gpt-5.6-sol",
+      purpose: "verification",
+      effectiveEffort: "high",
+    });
   });
 });

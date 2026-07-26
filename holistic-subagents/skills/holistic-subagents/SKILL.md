@@ -40,25 +40,41 @@ Before `holistic_create`, specify:
 - absolute cwd and topology: pane, tab, or worktree;
 - authority: read-only, controlled mutation, or isolated mutation;
 - allowed/forbidden paths;
-- minimum task capability and thinking effort;
+- minimum task capability and reasoning policy;
 - whether it verifies another delegation.
 
 Use [references/delegation-contract.md](references/delegation-contract.md) for
 brief semantics and [references/worktrees-and-safety.md](references/worktrees-and-safety.md)
 for mutation or cleanup.
 
-### Capability and effort
+### Shape the work first
 
-Classify task shape, not price or role:
+Do not delegate a trivial local step. Decompose by dependency and ownership:
+
+- run independent, non-overlapping investigations in parallel;
+- run dependent plan → implementation → review work in phases;
+- never assign concurrent mutation of the same paths;
+- give each child a distinct objective, boundary, evidence and return shape;
+- keep synthesis, conflict resolution and final acceptance with the parent.
+
+Start with the fewest children that create real parallelism. Add an independent
+reviewer when failure cost or uncertainty justifies the extra call. Read
+[references/task-distribution.md](references/task-distribution.md) for the full
+heuristic.
+
+### Capability and reasoning
+
+Classify task shape, not price or a permanent role:
 
 - `bounded`: localized, explicit, low-agency work;
-- `scoped`: bounded multi-step implementation/investigation;
+- `scoped`: well-defined multi-step implementation or investigation;
 - `cross_cutting`: several modules, wider exploration or material ambiguity;
-- `high_agency`: broad, long, uncertain work requiring sustained autonomy.
+- `high_agency`: broad, long-horizon mission requiring sustained autonomy.
 
-Choose effort separately: `low`, `medium`, or `high`. Never request another
-thinking level. Concrete models are resolved from the package policy and are
-limited to OpenAI Codex and DeepSeek. Read
+Use `effort=auto` (or omit it) for the capability default. Override with `low`,
+`medium`, or `high` only when reasoning demand differs from task breadth.
+Concrete models are resolved from the package policy and remain limited to
+OpenAI Codex and DeepSeek. Read
 [references/model-selection.md](references/model-selection.md) for filters,
 independence and degraded fallback.
 
@@ -96,9 +112,10 @@ baseline with an unsupported self-report.
 
 You may review directly or create a verification delegation with
 `purpose=verification` and `reviewOf=<original-id>`. Give the reviewer a stable
-commit/diff and read-only authority. It may use the other allowed provider to
-reduce correlated errors. The reviewer reports findings; only you accept the
-original.
+commit/diff, fresh context, an adversarial brief, objective criteria and
+read-only authority. Model policy routes verification to GPT-5.6 Sol; do not
+request another provider merely for diversity. The reviewer reports findings;
+only you accept the original.
 
 If validation fails, call `holistic_send` with `correction=true` and a precise,
 evidence-based request. Reuse the original executor session. Accept with

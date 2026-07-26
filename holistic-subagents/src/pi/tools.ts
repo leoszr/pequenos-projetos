@@ -6,12 +6,17 @@ import type { DelegationService, ManageAction } from "../domain/service.ts";
 import type { DelegationRequest } from "../domain/types.ts";
 
 const capability = Type.Union([
-  Type.Literal("bounded"),
-  Type.Literal("scoped"),
-  Type.Literal("cross_cutting"),
-  Type.Literal("high_agency"),
-]);
-const effort = Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")]);
+  Type.Literal("bounded", { description: "Localized, explicit, low-agency work" }),
+  Type.Literal("scoped", { description: "Well-defined multi-step implementation or investigation" }),
+  Type.Literal("cross_cutting", { description: "Several modules, wider exploration, or material ambiguity" }),
+  Type.Literal("high_agency", { description: "Broad, long-horizon mission requiring sustained autonomy" }),
+], { description: "Minimum task capability; concrete model selection stays automatic" });
+const effort = Type.Union([
+  Type.Literal("auto", { description: "Use the capability default" }),
+  Type.Literal("low", { description: "Known procedure with few decisions" }),
+  Type.Literal("medium", { description: "Balanced default for multi-step work" }),
+  Type.Literal("high", { description: "Ambiguity, competing hypotheses, risk, or difficult validation" }),
+], { description: "Reasoning policy; omit or use auto for the capability default" });
 
 export function registerHolisticTools(
   pi: ExtensionAPI,
@@ -23,7 +28,7 @@ export function registerHolisticTools(
     name: "holistic_create",
     label: "Create Delegation",
     description: "Create and start one persistent auxiliary Pi delegation through Herdr.",
-    promptSnippet: "Create a persistent Herdr delegation with explicit mission, authority, topology, evidence, capability and effort",
+    promptSnippet: "Create a persistent Herdr delegation with explicit mission, authority, topology, evidence, minimum capability and reasoning policy",
     executionMode: "sequential",
     parameters: Type.Object({
       name: Type.String(),
@@ -43,7 +48,7 @@ export function registerHolisticTools(
       acceptanceEvidence: Type.Array(Type.String()),
       topology: Type.Union([Type.Literal("pane"), Type.Literal("tab"), Type.Literal("worktree")]),
       minimumCapability: capability,
-      effort,
+      effort: Type.Optional(effort),
       allowDegraded: Type.Optional(Type.Boolean()),
       purpose: Type.Optional(Type.Union([Type.Literal("execution"), Type.Literal("verification")])),
       reviewOf: Type.Optional(Type.String()),
@@ -69,7 +74,7 @@ export function registerHolisticTools(
         branch: params.branch,
         model: {
           minimumCapability: params.minimumCapability,
-          effort: params.effort,
+          effort: params.effort === "auto" ? undefined : params.effort,
           allowDegraded: params.allowDegraded,
           independence: params.avoidProvider
             ? { required: true, avoidProvider: params.avoidProvider }
@@ -186,8 +191,23 @@ export function registerHolisticTools(
   });
 }
 
-function summary(delegation: { id: string; state: string; request: { name: string }; health?: string }): string {
-  return `${delegation.id} · ${delegation.request.name} · ${delegation.state}${delegation.health ? ` (${delegation.health})` : ""}`;
+function summary(delegation: {
+  id: string;
+  state: string;
+  request: { name: string };
+  health?: string;
+  modelResolution?: {
+    model: string;
+    thinking: string;
+    requestedEffort?: string;
+    effectiveEffort?: string;
+  };
+}): string {
+  const resolution = delegation.modelResolution;
+  const routing = resolution
+    ? ` · ${resolution.model} · effort:${resolution.requestedEffort ?? "legacy"}→${resolution.effectiveEffort ?? resolution.thinking} · think:${resolution.thinking}`
+    : "";
+  return `${delegation.id} · ${delegation.request.name} · ${delegation.state}${routing}${delegation.health ? ` (${delegation.health})` : ""}`;
 }
 
 function toolResult(text: string, details: unknown) {

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type {
   CanonicalEffort,
   Capability,
+  DelegationPurpose,
   ModelRequest,
   ModelResolution,
 } from "../domain/types.ts";
@@ -11,6 +12,7 @@ export interface PolicyModel {
   id: string;
   family: string;
   capability: Capability;
+  purposes: DelegationPurpose[];
   thinkingMap: Record<CanonicalEffort, CanonicalEffort>;
   tools: string[];
   harness: string[];
@@ -20,10 +22,12 @@ export interface PolicyModel {
 }
 
 export interface ModelPolicy {
-  version: 1;
+  version: 3;
   providers: Array<"openai-codex" | "deepseek">;
   capabilities: Capability[];
   efforts: CanonicalEffort[];
+  defaultEffort: Record<Capability, CanonicalEffort>;
+  purposeDefaultEffort: Partial<Record<DelegationPurpose, CanonicalEffort>>;
   models: PolicyModel[];
 }
 
@@ -60,19 +64,37 @@ export function loadModelPolicy(): ModelPolicy {
 }
 
 export function validatePolicy(policy: ModelPolicy): void {
-  if (policy.version !== 1) throw new Error("Unsupported model policy version");
+  if (policy.version !== 3) throw new Error("Unsupported model policy version");
   if (policy.efforts.join(",") !== "low,medium,high") {
     throw new Error("Model policy efforts must be low, medium, high");
+  }
+  for (const capability of policy.capabilities) {
+    if (!policy.efforts.includes(policy.defaultEffort[capability])) {
+      throw new Error(`Invalid default effort for capability ${capability}`);
+    }
+  }
+  for (const effort of Object.values(policy.purposeDefaultEffort)) {
+    if (!policy.efforts.includes(effort)) {
+      throw new Error(`Invalid purpose default effort: ${effort}`);
+    }
   }
   for (const model of policy.models) {
     const provider = model.id.split("/", 1)[0] as "openai-codex" | "deepseek";
     if (!policy.providers.includes(provider)) {
       throw new Error(`Model outside provider allowlist: ${model.id}`);
     }
+    if (!model.purposes.length || model.purposes.some((purpose) => purpose !== "execution" && purpose !== "verification")) {
+      throw new Error(`Invalid purposes for ${model.id}`);
+    }
     for (const effort of policy.efforts) {
       if (!policy.efforts.includes(model.thinkingMap[effort])) {
         throw new Error(`Invalid thinking translation for ${model.id}`);
       }
+    }
+  }
+  for (const purpose of ["execution", "verification"] as const) {
+    if (!policy.models.some((model) => model.purposes.includes(purpose))) {
+      throw new Error(`Model policy has no ${purpose} model`);
     }
   }
 }
@@ -84,12 +106,18 @@ export function resolveModel(
 ): ModelResolution {
   validatePolicy(policy);
   const capabilities = policy.capabilities;
+  const purpose = request.purpose ?? "execution";
+  const requestedEffort = request.effort ?? "auto";
+  const effectiveEffort = request.effort
+    ?? policy.purposeDefaultEffort[purpose]
+    ?? policy.defaultEffort[request.minimumCapability];
   const availableById = new Map(
     available.map((model) => [`${model.provider}/${model.id}`, model]),
   );
   const compatible = policy.models.filter((candidate) => {
     const runtime = availableById.get(candidate.id);
     if (!runtime) return false;
+    if (!candidate.purposes.includes(purpose)) return false;
     const requirements = request.requirements;
     if (requirements?.minContextWindow && runtime.contextWindow < requirements.minContextWindow) {
       return false;
@@ -146,7 +174,7 @@ export function resolveModel(
   const selected = ranked[0]!;
   const [provider] = selected.id.split("/", 1) as ["openai-codex" | "deepseek"];
   const providedRank = capabilities.indexOf(selected.capability);
-  const thinking = selected.thinkingMap[request.effort];
+  const thinking = selected.thinkingMap[effectiveEffort];
   return {
     model: selected.id,
     provider,
@@ -155,8 +183,11 @@ export function resolveModel(
     requestedCapability: request.minimumCapability,
     providedCapability: selected.capability,
     degradedCapability: providedRank < requestedRank,
-    exactThinking: thinking === request.effort,
+    exactThinking: thinking === effectiveEffort,
     alternatives: ranked.slice(1).map((candidate) => candidate.id),
-    reason: `Selected ${selected.capability} for ${request.minimumCapability}; thinking ${request.effort} -> ${thinking}`,
+    reason: `Selected ${selected.capability} ${purpose} model for ${request.minimumCapability}; effort ${requestedEffort} -> ${effectiveEffort}; thinking ${effectiveEffort} -> ${thinking}`,
+    requestedEffort,
+    effectiveEffort,
+    purpose,
   };
 }

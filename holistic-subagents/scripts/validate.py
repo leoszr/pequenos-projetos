@@ -18,6 +18,7 @@ POLICY = ROOT / "src/models/policy.json"
 MARKDOWN_LINK_RE = re.compile(r"\[[^]]+\]\(([^)]+\.md)\)")
 ALLOWED_PROVIDERS = {"openai-codex", "deepseek"}
 ALLOWED_EFFORTS = ["low", "medium", "high"]
+ALLOWED_CAPABILITIES = ["bounded", "scoped", "cross_cutting", "high_agency"]
 REQUIRED_CALLBACKS = {
     "HOLISTIC_QUESTION",
     "HOLISTIC_INPUT_REQUIRED",
@@ -104,13 +105,23 @@ def validate_links() -> None:
 
 def validate_policy() -> set[str]:
     policy = load_json(POLICY)
-    if policy.get("version") != 1:
+    if policy.get("version") != 3:
         fail("unsupported model policy version")
     if set(policy.get("providers", [])) != ALLOWED_PROVIDERS:
         fail("model providers must be exactly OpenAI Codex and DeepSeek")
     if policy.get("efforts") != ALLOWED_EFFORTS:
         fail("model efforts must be exactly low, medium, high")
+    if policy.get("capabilities") != ALLOWED_CAPABILITIES:
+        fail("model capabilities must be bounded, scoped, cross_cutting, high_agency")
+    defaults = policy.get("defaultEffort", {})
+    if set(defaults) != set(ALLOWED_CAPABILITIES):
+        fail("default effort must cover every capability exactly")
+    if any(effort not in ALLOWED_EFFORTS for effort in defaults.values()):
+        fail("invalid default effort")
+    if policy.get("purposeDefaultEffort") != {"verification": "high"}:
+        fail("verification default effort must be high")
     models: set[str] = set()
+    model_records: dict[str, dict[str, Any]] = {}
     for model in policy.get("models", []):
         model_id = model.get("id", "")
         provider = model_id.split("/", 1)[0]
@@ -119,6 +130,10 @@ def validate_policy() -> set[str]:
         if model_id in models:
             fail(f"duplicate model in policy: {model_id}")
         models.add(model_id)
+        model_records[model_id] = model
+        purposes = model.get("purposes", [])
+        if not purposes or any(purpose not in {"execution", "verification"} for purpose in purposes):
+            fail(f"invalid model purposes: {model_id}")
         thinking = model.get("thinkingMap", {})
         if set(thinking) != set(ALLOWED_EFFORTS):
             fail(f"incomplete thinking map: {model_id}")
@@ -126,6 +141,13 @@ def validate_policy() -> set[str]:
             fail(f"invalid thinking level: {model_id}")
     if not models:
         fail("model policy is empty")
+    covered_purposes = {
+        purpose
+        for model in model_records.values()
+        for purpose in model.get("purposes", [])
+    }
+    if covered_purposes != {"execution", "verification"}:
+        fail("model policy must cover execution and verification")
     if (ROOT / "skills/holistic-subagents/references/model-commands.md").exists():
         fail("model-commands.md returned; launch argv must come from policy")
     return models
