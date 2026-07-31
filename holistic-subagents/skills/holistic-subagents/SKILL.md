@@ -71,10 +71,10 @@ Classify task shape, not price or a permanent role:
 - `cross_cutting`: several modules, wider exploration or material ambiguity;
 - `high_agency`: broad, long-horizon mission requiring sustained autonomy.
 
-Use `effort=auto` (or omit it) for the capability default. Override with `low`,
-`medium`, or `high` only when reasoning demand differs from task breadth.
-Concrete models are resolved from the package policy and remain limited to
-OpenAI Codex and DeepSeek. Read
+Use `effort=auto` (or omit it) for the capability default. Override only when
+reasoning demand differs from task breadth. Concrete models are resolved from
+the effective editable policy. The packaged default uses GPT-5.6 Luna, Terra,
+and Sol; project policy replaces global policy after startup or `/reload`. Read
 [references/model-selection.md](references/model-selection.md) for filters,
 independence and degraded fallback.
 
@@ -113,9 +113,13 @@ baseline with an unsupported self-report.
 You may review directly or create a verification delegation with
 `purpose=verification` and `reviewOf=<original-id>`. Give the reviewer a stable
 commit/diff, fresh context, an adversarial brief, objective criteria and
-read-only authority. Model policy routes verification to GPT-5.6 Sol; do not
-request another provider merely for diversity. The reviewer reports findings;
+read-only authority. The effective policy decides the verification model; the
+packaged default routes it to GPT-5.6 Sol at `medium`. Model choice never
+replaces clean context and objective criteria. The reviewer reports findings;
 only you accept the original.
+
+`reviewOf` also infers `purpose=verification` when purpose is omitted. An
+explicit `purpose=execution` with `reviewOf` is rejected.
 
 If validation fails, call `holistic_send` with `correction=true` and a precise,
 evidence-based request. Reuse the original executor session. Accept with

@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 import { DelegationService } from "../../src/domain/service.ts";
 import { DelegationRepository, InMemoryDelegationStore } from "../../src/domain/store.ts";
 import type { DelegationRequest } from "../../src/domain/types.ts";
+import { createModelPolicyResolver, parseModelPolicy } from "../../src/models/policy.ts";
+
+const modelPolicy = createModelPolicyResolver(parseModelPolicy(
+  readFileSync(new URL("../../src/models/default-policy.json", import.meta.url), "utf8"),
+));
 
 function request(): DelegationRequest {
   return {
@@ -54,6 +60,7 @@ function service() {
         { provider: "openai-codex", id: "gpt-5.6-luna", contextWindow: 200_000, input: ["text", "image"] },
         { provider: "openai-codex", id: "gpt-5.6-sol", contextWindow: 200_000, input: ["text", "image"] },
       ],
+      modelPolicy,
     }),
   };
 }
@@ -92,7 +99,39 @@ describe("DelegationService", () => {
     expect(reviewer.modelResolution).toMatchObject({
       model: "openai-codex/gpt-5.6-sol",
       purpose: "verification",
-      effectiveEffort: "high",
+      effectiveEffort: "medium",
     });
+  });
+
+  it("infers verification purpose when reviewOf is provided", async () => {
+    const fixture = service();
+    const original = await fixture.value.create(request());
+    const reviewer = await fixture.value.create({
+      ...request(),
+      name: "review",
+      reviewOf: original.id,
+    });
+    expect(reviewer).toMatchObject({
+      purpose: "verification",
+      request: { purpose: "verification", reviewOf: original.id },
+      modelResolution: {
+        model: "openai-codex/gpt-5.6-sol",
+        purpose: "verification",
+        effectiveEffort: "medium",
+      },
+    });
+  });
+
+  it("rejects reviewOf with an explicit execution purpose", async () => {
+    const fixture = service();
+    const original = await fixture.value.create(request());
+    await expect(
+      fixture.value.create({
+        ...request(),
+        name: "invalid-review",
+        purpose: "execution",
+        reviewOf: original.id,
+      }),
+    ).rejects.toThrow("reviewOf requires verification purpose");
   });
 });

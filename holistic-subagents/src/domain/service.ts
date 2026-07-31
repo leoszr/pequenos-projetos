@@ -4,8 +4,12 @@ import { relative, join } from "node:path";
 import { applyInfrastructureEvent, reconcileSnapshot } from "../herdr/reconcile.ts";
 import type { HerdrClient, HerdrSnapshot, HerdrSubscriptionEvent } from "../herdr/client.ts";
 import { HerdrTopologyManager } from "../herdr/topologies.ts";
-import { resolveModel, type AvailableModel } from "../models/resolve.ts";
-import { buildDelegationBrief, validateDelegationRequest } from "../protocol/brief.ts";
+import type { AvailableModel, ModelPolicyResolver } from "../models/policy.ts";
+import {
+  buildDelegationBrief,
+  normalizeDelegationRequest,
+  validateDelegationRequest,
+} from "../protocol/brief.ts";
 import { handleCallbackInput, type CallbackHandlingResult } from "../protocol/callback.ts";
 import {
   assertAuthorityPreconditions,
@@ -47,6 +51,7 @@ export class DelegationService {
   readonly #runner: CommandRunner;
   readonly #identity: CoordinatorIdentity;
   readonly #availableModels: () => AvailableModel[];
+  readonly #modelPolicy: ModelPolicyResolver;
   readonly #queues = new Map<string, Promise<unknown>>();
 
   constructor(options: {
@@ -55,12 +60,14 @@ export class DelegationService {
     runner: CommandRunner;
     identity: CoordinatorIdentity;
     availableModels: () => AvailableModel[];
+    modelPolicy: ModelPolicyResolver;
   }) {
     this.#repository = options.repository;
     this.#herdr = options.herdr;
     this.#runner = options.runner;
     this.#identity = options.identity;
     this.#availableModels = options.availableModels;
+    this.#modelPolicy = options.modelPolicy;
     this.#topologies = new HerdrTopologyManager(options.herdr);
     this.#cleanup = new DelegationCleanup(options.herdr, options.runner);
   }
@@ -76,10 +83,11 @@ export class DelegationService {
   }
 
   async create(request: DelegationRequest, signal?: AbortSignal): Promise<Delegation> {
-    validateDelegationRequest(request);
-    assertAuthorityPreconditions(request.authority);
-    const resolution = resolveModel(
-      { ...request.model, purpose: request.purpose ?? "execution" },
+    const normalizedRequest = normalizeDelegationRequest(request);
+    validateDelegationRequest(normalizedRequest);
+    assertAuthorityPreconditions(normalizedRequest.authority);
+    const resolution = this.#modelPolicy.resolve(
+      { ...normalizedRequest.model, purpose: normalizedRequest.purpose },
       this.#availableModels(),
     );
     const now = new Date().toISOString();
@@ -90,9 +98,9 @@ export class DelegationService {
       parentPaneId: this.#identity.parentPaneId,
       callbackToken: randomBytes(24).toString("base64url"),
       state: "prepared",
-      request: structuredClone(request),
-      purpose: request.purpose ?? "execution",
-      reviewOf: request.reviewOf,
+      request: structuredClone(normalizedRequest),
+      purpose: normalizedRequest.purpose,
+      reviewOf: normalizedRequest.reviewOf,
       reviewerIds: [],
       modelResolution: resolution,
       resources: [],
@@ -101,11 +109,15 @@ export class DelegationService {
       createdAt: now,
       updatedAt: now,
     };
-    delegation.authorityBaseline = await captureAuthorityBaseline(this.#runner, request.cwd, now);
+    delegation.authorityBaseline = await captureAuthorityBaseline(
+      this.#runner,
+      normalizedRequest.cwd,
+      now,
+    );
     this.#repository.save(delegation, "created");
 
-    if (request.reviewOf) {
-      const original = this.get(request.reviewOf);
+    if (normalizedRequest.reviewOf) {
+      const original = this.get(normalizedRequest.reviewOf);
       this.#repository.save(
         {
           ...original,
@@ -124,9 +136,9 @@ export class DelegationService {
           delegationId: delegation.id,
           parentSessionId: delegation.parentSessionId,
           ownershipToken: ownershipToken(delegation),
-          name: request.name,
-          cwd: request.cwd,
-          topology: request.topology,
+          name: normalizedRequest.name,
+          cwd: normalizedRequest.cwd,
+          topology: normalizedRequest.topology,
           parentPaneId: this.#identity.parentPaneId,
           parentWorkspaceId: this.#identity.parentWorkspaceId,
           parentTabId: this.#identity.parentTabId,
@@ -138,17 +150,17 @@ export class DelegationService {
               runtimeCwd,
               request: { ...delegation.request, cwd: runtimeCwd },
             }),
-          baseRef: request.baseRef,
-          branch: request.branch,
+          baseRef: normalizedRequest.baseRef,
+          branch: normalizedRequest.branch,
           worktreeRelativeCwd: delegation.authorityBaseline?.gitRoot
-            ? relative(delegation.authorityBaseline.gitRoot, request.cwd)
+            ? relative(delegation.authorityBaseline.gitRoot, normalizedRequest.cwd)
             : undefined,
           onResource: async (resource) => {
             if (resource.kind === "worktree" && resource.path) {
               const auditCwd = delegation.authorityBaseline?.gitRoot
                 ? join(
                     resource.path,
-                    relative(delegation.authorityBaseline.gitRoot, request.cwd),
+                    relative(delegation.authorityBaseline.gitRoot, normalizedRequest.cwd),
                   )
                 : resource.path;
               delegation = {

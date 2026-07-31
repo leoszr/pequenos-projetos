@@ -24,14 +24,16 @@ interface ModeEntryData {
 
 export interface HolisticModeController {
   isEnabled(): boolean;
+  setAvailable(available: boolean): void;
 }
 
 export function registerHolisticMode(pi: ExtensionAPI): HolisticModeController {
   let enabled = false;
+  let available = true;
 
   const applyToolAvailability = () => {
     const active = pi.getActiveTools();
-    if (enabled) {
+    if (enabled && available) {
       pi.setActiveTools([...new Set([...active, ...HOLISTIC_TOOL_NAMES])]);
       return;
     }
@@ -117,7 +119,13 @@ export function registerHolisticMode(pi: ExtensionAPI): HolisticModeController {
     }
   });
 
-  return { isEnabled: () => enabled };
+  return {
+    isEnabled: () => enabled && available,
+    setAvailable(next) {
+      available = next;
+      applyToolAvailability();
+    },
+  };
 }
 
 export function removeHolisticSkill(

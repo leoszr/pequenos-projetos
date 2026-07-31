@@ -1,4 +1,21 @@
-import type { Delegation, DelegationRequest } from "../domain/types.ts";
+import type {
+  Delegation,
+  DelegationPurpose,
+  DelegationRequest,
+} from "../domain/types.ts";
+
+export type NormalizedDelegationRequest = Omit<DelegationRequest, "purpose"> & {
+  purpose: DelegationPurpose;
+};
+
+export function normalizeDelegationRequest(
+  request: DelegationRequest,
+): NormalizedDelegationRequest {
+  return {
+    ...request,
+    purpose: request.purpose ?? (request.reviewOf ? "verification" : "execution"),
+  };
+}
 
 export function buildDelegationBrief(delegation: Delegation): string {
   const request = delegation.request;
@@ -63,6 +80,9 @@ export function validateDelegationRequest(request: DelegationRequest): void {
   if (!request.cwd.startsWith("/")) throw new Error("Delegation cwd must be absolute");
   if (request.purpose === "verification" && !request.reviewOf) {
     throw new Error("Verification delegation requires reviewOf");
+  }
+  if (request.reviewOf && request.purpose === "execution") {
+    throw new Error("reviewOf requires verification purpose");
   }
   if (request.authority.mode === "isolated_mutation" && request.topology !== "worktree") {
     throw new Error("isolated_mutation requires worktree topology");

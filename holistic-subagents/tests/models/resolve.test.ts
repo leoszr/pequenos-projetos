@@ -1,58 +1,55 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 
 import {
-  loadModelPolicy,
+  createModelPolicyResolver,
   ModelResolutionError,
-  resolveModel,
-  validatePolicy,
+  parseModelPolicy,
+  validateModelPolicy,
   type AvailableModel,
-} from "../../src/models/resolve.ts";
+} from "../../src/models/policy.ts";
+
+const policy = parseModelPolicy(
+  readFileSync(new URL("../../src/models/default-policy.json", import.meta.url), "utf8"),
+);
+const resolveModel = createModelPolicyResolver(policy).resolve;
 
 const available: AvailableModel[] = [
   { provider: "openai-codex", id: "gpt-5.6-luna", contextWindow: 200_000, input: ["text", "image"] },
   { provider: "openai-codex", id: "gpt-5.6-terra", contextWindow: 200_000, input: ["text", "image"] },
   { provider: "openai-codex", id: "gpt-5.6-sol", contextWindow: 200_000, input: ["text", "image"] },
-  { provider: "deepseek", id: "deepseek-v4-flash", contextWindow: 128_000, input: ["text"] },
-  { provider: "deepseek", id: "deepseek-v4-pro", contextWindow: 128_000, input: ["text"] },
 ];
 
 describe("model policy", () => {
-  it("contains automatic effort defaults and only OpenAI/DeepSeek models", () => {
-    const policy = loadModelPolicy();
-    expect(policy.providers).toEqual(["openai-codex", "deepseek"]);
-    expect(policy.efforts).toEqual(["low", "medium", "high"]);
+  it("contains the packaged automatic effort defaults", () => {
+    expect(policy.providers).toEqual(["openai-codex"]);
+    expect(policy.efforts).toEqual(["low", "medium", "xhigh", "max"]);
     expect(policy.defaultEffort).toEqual({
-      bounded: "low",
-      scoped: "medium",
-      cross_cutting: "medium",
-      high_agency: "high",
+      bounded: "xhigh",
+      scoped: "max",
+      cross_cutting: "xhigh",
+      high_agency: "medium",
     });
-    expect(policy.models.every((model) => /^(openai-codex|deepseek)\//.test(model.id))).toBe(true);
+    expect(policy.models.every((model) => model.id.startsWith("openai-codex/gpt-5.6-"))).toBe(true);
     expect(
       policy.models
         .filter((model) => model.purposes.includes("verification"))
         .map((model) => model.id),
     ).toEqual(["openai-codex/gpt-5.6-sol"]);
-    const pro = policy.models.find((model) => model.id === "deepseek/deepseek-v4-pro")!;
-    const terra = policy.models.find((model) => model.id === "openai-codex/gpt-5.6-terra")!;
-    expect(pro.preferenceRank).toBeLessThan(terra.preferenceRank);
   });
 
-  it("prioritizes DeepSeek Pro for cross-cutting worker tasks", () => {
-    const result = resolveModel(
-      { minimumCapability: "cross_cutting" },
-      available,
-    );
-    expect(result.model).toBe("deepseek/deepseek-v4-pro");
+  it("uses Terra xhigh for cross-cutting worker tasks", () => {
+    const result = resolveModel({ minimumCapability: "cross_cutting" }, available);
+    expect(result.model).toBe("openai-codex/gpt-5.6-terra");
     expect(result.degradedCapability).toBe(false);
-    expect(result.thinking).toBe("high");
-    expect(result.exactThinking).toBe(false);
+    expect(result.thinking).toBe("xhigh");
+    expect(result.exactThinking).toBe(true);
     expect(result.purpose).toBe("execution");
     expect(result.requestedEffort).toBe("auto");
-    expect(result.effectiveEffort).toBe("medium");
+    expect(result.effectiveEffort).toBe("xhigh");
   });
 
-  it("uses Sol with high effort for verification regardless of worker capability", () => {
+  it("uses Sol medium for verification regardless of worker capability", () => {
     const result = resolveModel(
       { minimumCapability: "scoped", purpose: "verification" },
       available,
@@ -60,11 +57,11 @@ describe("model policy", () => {
     expect(result.model).toBe("openai-codex/gpt-5.6-sol");
     expect(result.purpose).toBe("verification");
     expect(result.requestedEffort).toBe("auto");
-    expect(result.effectiveEffort).toBe("high");
-    expect(result.thinking).toBe("high");
+    expect(result.effectiveEffort).toBe("medium");
+    expect(result.thinking).toBe("medium");
   });
 
-  it("never falls back to DeepSeek for verification", () => {
+  it("never falls back to an execution-only GPT for verification", () => {
     const withoutSol = available.filter((model) => model.id !== "gpt-5.6-sol");
     expect(() => resolveModel(
       {
@@ -73,34 +70,27 @@ describe("model policy", () => {
         allowDegraded: true,
       },
       withoutSol,
-    )).toThrow("No allowlisted OpenAI/DeepSeek model satisfies the request");
+    )).toThrow("No model in the effective policy satisfies the request");
   });
 
-  it("enforces provider independence within the two-provider allowlist", () => {
-    const result = resolveModel(
-      {
-        minimumCapability: "scoped",
-        effort: "medium",
-        independence: { required: true, avoidProvider: "openai-codex" },
-      },
-      available,
-    );
-    expect(result.provider).toBe("deepseek");
-    expect(result.thinking).toBe("high");
-    expect(result.exactThinking).toBe(false);
+  it("enforces family independence within the GPT allowlist", () => {
+    const result = resolveModel({
+      minimumCapability: "scoped",
+      independence: { required: true, avoidFamily: "gpt-5.6-luna" },
+    }, available);
+    expect(result.model).toBe("openai-codex/gpt-5.6-terra");
   });
 
   it("requires explicit opt-in for degraded capability", () => {
     const lunaOnly = available.slice(0, 1);
-    expect(() =>
-      resolveModel({ minimumCapability: "high_agency" }, lunaOnly),
-    ).toThrow(ModelResolutionError);
+    expect(() => resolveModel({ minimumCapability: "high_agency" }, lunaOnly))
+      .toThrow(ModelResolutionError);
     const result = resolveModel(
       { minimumCapability: "high_agency", allowDegraded: true },
       lunaOnly,
     );
     expect(result.degradedCapability).toBe(true);
-    expect(result.thinking).toBe("high");
+    expect(result.thinking).toBe("xhigh");
   });
 
   it("filters context and modality requirements", () => {
@@ -116,16 +106,13 @@ describe("model policy", () => {
   });
 
   it("rejects providers outside the allowlist", () => {
-    const policy = loadModelPolicy();
-    expect(() =>
-      validatePolicy({
-        ...policy,
-        models: [{ ...policy.models[0]!, id: "openrouter/other" }],
-      }),
-    ).toThrow("outside provider allowlist");
+    expect(() => validateModelPolicy({
+      ...policy,
+      models: [{ ...policy.models[0]!, id: "openrouter/other" }],
+    })).toThrow("outside provider allowlist");
   });
 
-  it("records an explicit effort override", () => {
+  it("never launches Luna below xhigh", () => {
     const result = resolveModel(
       { minimumCapability: "scoped", effort: "low" },
       available,
@@ -133,14 +120,13 @@ describe("model policy", () => {
     expect(result.model).toBe("openai-codex/gpt-5.6-luna");
     expect(result.requestedEffort).toBe("low");
     expect(result.effectiveEffort).toBe("low");
+    expect(result.thinking).toBe("xhigh");
+    expect(result.exactThinking).toBe(false);
   });
 
-  it("falls back to Terra when DeepSeek Pro is unavailable", () => {
-    const withoutPro = available.filter((model) => model.id !== "deepseek-v4-pro");
-    const result = resolveModel(
-      { minimumCapability: "cross_cutting" },
-      withoutPro,
-    );
-    expect(result.model).toBe("openai-codex/gpt-5.6-terra");
+  it("uses Luna max for scoped volume work", () => {
+    const result = resolveModel({ minimumCapability: "scoped" }, available);
+    expect(result.model).toBe("openai-codex/gpt-5.6-luna");
+    expect(result.thinking).toBe("max");
   });
 });

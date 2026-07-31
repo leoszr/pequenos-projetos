@@ -14,11 +14,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "package.json"
 SKILL = ROOT / "skills/holistic-subagents/SKILL.md"
-POLICY = ROOT / "src/models/policy.json"
 MARKDOWN_LINK_RE = re.compile(r"\[[^]]+\]\(([^)]+\.md)\)")
-ALLOWED_PROVIDERS = {"openai-codex", "deepseek"}
-ALLOWED_EFFORTS = ["low", "medium", "high"]
-ALLOWED_CAPABILITIES = ["bounded", "scoped", "cross_cutting", "high_agency"]
 REQUIRED_CALLBACKS = {
     "HOLISTIC_QUESTION",
     "HOLISTIC_INPUT_REQUIRED",
@@ -104,50 +100,19 @@ def validate_links() -> None:
 
 
 def validate_policy() -> set[str]:
-    policy = load_json(POLICY)
-    if policy.get("version") != 3:
-        fail("unsupported model policy version")
-    if set(policy.get("providers", [])) != ALLOWED_PROVIDERS:
-        fail("model providers must be exactly OpenAI Codex and DeepSeek")
-    if policy.get("efforts") != ALLOWED_EFFORTS:
-        fail("model efforts must be exactly low, medium, high")
-    if policy.get("capabilities") != ALLOWED_CAPABILITIES:
-        fail("model capabilities must be bounded, scoped, cross_cutting, high_agency")
-    defaults = policy.get("defaultEffort", {})
-    if set(defaults) != set(ALLOWED_CAPABILITIES):
-        fail("default effort must cover every capability exactly")
-    if any(effort not in ALLOWED_EFFORTS for effort in defaults.values()):
-        fail("invalid default effort")
-    if policy.get("purposeDefaultEffort") != {"verification": "high"}:
-        fail("verification default effort must be high")
-    models: set[str] = set()
-    model_records: dict[str, dict[str, Any]] = {}
-    for model in policy.get("models", []):
-        model_id = model.get("id", "")
-        provider = model_id.split("/", 1)[0]
-        if provider not in ALLOWED_PROVIDERS:
-            fail(f"model outside provider allowlist: {model_id}")
-        if model_id in models:
-            fail(f"duplicate model in policy: {model_id}")
-        models.add(model_id)
-        model_records[model_id] = model
-        purposes = model.get("purposes", [])
-        if not purposes or any(purpose not in {"execution", "verification"} for purpose in purposes):
-            fail(f"invalid model purposes: {model_id}")
-        thinking = model.get("thinkingMap", {})
-        if set(thinking) != set(ALLOWED_EFFORTS):
-            fail(f"incomplete thinking map: {model_id}")
-        if any(value not in ALLOWED_EFFORTS for value in thinking.values()):
-            fail(f"invalid thinking level: {model_id}")
+    try:
+        result = subprocess.run(
+            ["node", "--experimental-strip-types", "scripts/validate-policy.ts"],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        models = set(json.loads(result.stdout))
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        fail(f"invalid default model policy: {error}")
     if not models:
         fail("model policy is empty")
-    covered_purposes = {
-        purpose
-        for model in model_records.values()
-        for purpose in model.get("purposes", [])
-    }
-    if covered_purposes != {"execution", "verification"}:
-        fail("model policy must cover execution and verification")
     if (ROOT / "skills/holistic-subagents/references/model-commands.md").exists():
         fail("model-commands.md returned; launch argv must come from policy")
     return models
@@ -212,9 +177,10 @@ def validate_herdr() -> None:
         fail(f"Herdr schema is missing required methods: {sorted(missing)}")
 
 
-def available_models() -> set[str]:
+def available_models(expected: set[str]) -> set[str]:
     models: set[str] = set()
-    for query in ("gpt-5.6", "deepseek-v4"):
+    for expected_id in expected:
+        query = expected_id.split("/", 1)[-1]
         result = subprocess.run(
             ["pi", "--list-models", query],
             check=True,
@@ -230,7 +196,7 @@ def available_models() -> set[str]:
 
 def validate_model_availability(allowed: set[str]) -> None:
     try:
-        available = available_models()
+        available = available_models(allowed)
     except (OSError, subprocess.CalledProcessError) as error:
         fail(f"could not query Pi models: {error}")
     missing = allowed - available
@@ -248,7 +214,7 @@ def main() -> None:
     validate_model_availability(models)
     print(
         "OK: hybrid manifest, skill, links, callback protocol, Herdr socket API, "
-        f"and {len(models)} OpenAI/DeepSeek models validated"
+        f"and {len(models)} default-policy models validated"
     )
 
 

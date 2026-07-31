@@ -11,8 +11,10 @@ brief interativo.
 - `authority.mode`, paths permitidos/proibidos;
 - `acceptanceEvidence`;
 - `topology`;
-- `minimumCapability` e `effort=auto|low|medium|high`;
-- `purpose=verification` + `reviewOf` quando revisar outro trabalho.
+- `minimumCapability` e `effort=auto` ou um esforço exposto pela Política
+  Efetiva;
+- `reviewOf` quando revisar outro trabalho; ele infere `purpose=verification`,
+  e `purpose=execution` explícito é rejeitado.
 
 O filho deve retornar resultado, evidências, comandos executados, arquivos ou
 commits e incertezas/riscos. O transcript completo do pai não é enviado por

@@ -75,6 +75,20 @@ describe("holistic mode", () => {
     expect(value.pi.appendEntry).not.toHaveBeenCalled();
   });
 
+  it("removes tools while the coordinator runtime is unavailable", async () => {
+    const value = fixture([{ type: "custom", customType: "holistic-mode", data: { enabled: true } }]);
+    const mode = registerHolisticMode(value.pi as never);
+    await value.handlers.get("session_start")?.[0]?.({}, value.ctx);
+
+    mode.setAvailable(false);
+    expect(mode.isEnabled()).toBe(false);
+    expect(value.activeTools()).toEqual(["read"]);
+
+    mode.setAvailable(true);
+    expect(mode.isEnabled()).toBe(true);
+    expect(value.activeTools()).toEqual(["read", ...HOLISTIC_TOOL_NAMES]);
+  });
+
   it("rebuilds mode state after session tree navigation", async () => {
     const branch: unknown[] = [];
     const value = fixture(branch);

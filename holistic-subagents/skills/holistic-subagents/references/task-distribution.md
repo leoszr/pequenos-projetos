@@ -59,9 +59,9 @@ fio” pelo manager.
 - `cross_cutting`: causa incerta, vários módulos, síntese ou review difícil;
 - `high_agency`: horizonte longo, escopo amplo e ambiguidade material.
 
-Use `effort=auto` por padrão. Override: `low` para procedimento conhecido,
-`medium` para trabalho multi-etapas e `high` para hipóteses, risco ou validação
-difícil.
+Use `effort=auto` por padrão. A policy traduz a capacidade para o perfil do
+modelo: Luna `xhigh|max`, Terra `xhigh` e Sol `low|medium`. Overrides fora do
+perfil são elevados ou limitados pelo `thinkingMap` do modelo escolhido.
 
 ## Fontes primárias
 

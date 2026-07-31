@@ -8,7 +8,7 @@ import { isActiveState } from "../domain/state-machine.ts";
 import { DelegationRepository, PiSessionDelegationStore } from "../domain/store.ts";
 import type { SessionEntryLike } from "../domain/types.ts";
 import { HerdrClient } from "../herdr/client.ts";
-import type { AvailableModel } from "../models/resolve.ts";
+import type { AvailableModel, ModelPolicyResolver } from "../models/policy.ts";
 import type { CommandRunner } from "../security/authority.ts";
 
 export interface CoordinatorRuntime {
@@ -22,6 +22,7 @@ export async function createCoordinatorRuntime(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   onChange: () => void,
+  modelPolicy: ModelPolicyResolver,
 ): Promise<CoordinatorRuntime> {
   const socketPath = process.env.HERDR_SOCKET_PATH;
   const parentPaneId = process.env.HERDR_PANE_ID;
@@ -51,6 +52,7 @@ export async function createCoordinatorRuntime(
       parentTabId,
     },
     availableModels: () => availableModels(ctx),
+    modelPolicy,
   });
   const snapshot = await client.connect();
   service.reconcile(snapshot);
@@ -97,7 +99,7 @@ export async function createCoordinatorRuntime(
   return runtime;
 }
 
-function availableModels(ctx: ExtensionContext): AvailableModel[] {
+export function availableModels(ctx: ExtensionContext): AvailableModel[] {
   return ctx.modelRegistry.getAvailable().map((model) => ({
     provider: model.provider,
     id: model.id,

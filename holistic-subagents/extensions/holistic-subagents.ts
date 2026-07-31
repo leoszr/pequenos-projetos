@@ -1,10 +1,19 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { registerHolisticDashboard } from "../src/pi/dashboard.ts";
 import { registerHolisticMode } from "../src/pi/mode.ts";
-import { createCoordinatorRuntime, type CoordinatorRuntime } from "../src/pi/runtime.ts";
+import {
+  availableModels,
+  createCoordinatorRuntime,
+  type CoordinatorRuntime,
+} from "../src/pi/runtime.ts";
 import { updateHolisticStatus } from "../src/pi/status.ts";
 import { registerHolisticTools } from "../src/pi/tools.ts";
+import {
+  createModelPolicyResolver,
+  loadEffectiveModelPolicy,
+  unavailablePolicyModels,
+} from "../src/models/policy.ts";
 import { coordinatorEnabled } from "../src/security/authority.ts";
 
 /** Pi package entrypoint. */
@@ -27,27 +36,56 @@ export default function holisticSubagents(pi: ExtensionAPI): void {
     if (currentContext) updateHolisticStatus(currentContext, runtime?.service);
   };
 
-  registerHolisticTools(pi, service, refresh, mode.isEnabled);
   registerHolisticDashboard(pi, service, (ctx) => updateHolisticStatus(ctx, runtime?.service));
 
   const initialize = async (ctx: Parameters<typeof updateHolisticStatus>[0]) => {
+    mode.setAvailable(false);
     runtime?.close();
+    runtime = undefined;
     currentContext = ctx;
-    runtime = await createCoordinatorRuntime(pi, ctx, refresh);
+    const loaded = await loadEffectiveModelPolicy({
+      cwd: ctx.cwd,
+      projectTrusted: ctx.isProjectTrusted(),
+      projectConfigDirName: CONFIG_DIR_NAME,
+    });
+    const models = availableModels(ctx);
+    const unavailable = unavailablePolicyModels(loaded.policy, models);
+    if (unavailable.length) {
+      ctx.ui.notify(
+        `Holistic model policy warning (${loaded.path}): unavailable models: ${unavailable.join(", ")}`,
+        "warning",
+      );
+    }
+    if (loaded.created) {
+      ctx.ui.notify(`Created editable holistic model policy: ${loaded.path}`, "info");
+    }
+    registerHolisticTools(pi, service, loaded.policy, refresh, mode.isEnabled);
+    runtime = await createCoordinatorRuntime(
+      pi,
+      ctx,
+      refresh,
+      createModelPolicyResolver(loaded.policy),
+    );
+    mode.setAvailable(true);
     updateHolisticStatus(ctx, runtime.service);
   };
 
-  pi.on("session_start", async (_event, ctx) => {
+  const safeInitialize = async (ctx: Parameters<typeof updateHolisticStatus>[0]) => {
     try {
       await initialize(ctx);
     } catch (error) {
+      mode.setAvailable(false);
       ctx.ui.notify(
         `Holistic runtime unavailable: ${error instanceof Error ? error.message : String(error)}`,
         "error",
       );
     }
+  };
+
+  pi.on("session_start", async (_event, ctx) => {
+    await safeInitialize(ctx);
   });
-  pi.on("session_tree", async (_event, ctx) => initialize(ctx));
+  pi.on("session_tree", async (_event, ctx) => safeInitialize(ctx));
   pi.on("input", async (event) => {
     if (!runtime || event.source === "extension") return { action: "continue" };
     const result = runtime.service.handleCallbackInput(event.text);

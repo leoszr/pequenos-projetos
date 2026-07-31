@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "providers": ["openai-codex"],
+  "efforts": ["low", "medium", "xhigh", "max"],
+  "defaultEffort": {
+    "bounded": "xhigh",
+    "scoped": "max",
+    "cross_cutting": "xhigh",
+    "high_agency": "medium"
+  },
+  "purposeDefaultEffort": {
+    "verification": "medium"
+  },
+  "models": [
+    {
+      "id": "openai-codex/gpt-5.6-luna",
+      "family": "gpt-5.6-luna",
+      "capability": "scoped",
+      "purposes": ["execution"],
+      "thinkingMap": { "low": "xhigh", "medium": "xhigh", "xhigh": "xhigh", "max": "max" },
+      "tools": ["pi", "codex"],
+      "harness": ["pi", "herdr"],
+      "preferenceRank": 10,
+      "latencyRank": 1,
+      "costRank": 1
+    },
+    {
+      "id": "openai-codex/gpt-5.6-terra",
+      "family": "gpt-5.6-terra",
+      "capability": "cross_cutting",
+      "purposes": ["execution"],
+      "thinkingMap": { "low": "xhigh", "medium": "xhigh", "xhigh": "xhigh", "max": "xhigh" },
+      "tools": ["pi", "codex"],
+      "harness": ["pi", "herdr"],
+      "preferenceRank": 10,
+      "latencyRank": 2,
+      "costRank": 2
+    },
+    {
+      "id": "openai-codex/gpt-5.6-sol",
+      "family": "gpt-5.6-sol",
+      "capability": "high_agency",
+      "purposes": ["execution", "verification"],
+      "thinkingMap": { "low": "low", "medium": "medium", "xhigh": "medium", "max": "medium" },
+      "tools": ["pi", "codex"],
+      "harness": ["pi", "herdr"],
+      "preferenceRank": 10,
+      "latencyRank": 3,
+      "costRank": 3
+    }
+  ]
+}

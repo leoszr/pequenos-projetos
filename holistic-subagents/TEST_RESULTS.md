@@ -16,12 +16,12 @@ E2E foram removidos ao final.
 ## Automação
 
 - `npm run typecheck`: passou;
-- `npm test`: 11 arquivos, 37 testes, todos passaram;
+- `npm test`: 14 arquivos, 58 testes, todos passaram;
 - cobertura exercitada: state machine, event log, socket NDJSON, topologias,
   resolver, callbacks, reconciliação, autoridade, cleanup e service;
 - `python scripts/validate.py`: passou para manifest híbrido, links, três
-  callbacks, Herdr schema/protocol e cinco modelos OpenAI/DeepSeek;
-- `npm pack --dry-run`: 25 arquivos de runtime/documentação, sem `node_modules`;
+  callbacks, Herdr schema/protocol e três modelos da política padrão;
+- `npm pack --dry-run`: 28 arquivos de runtime/documentação, sem `node_modules`;
 - `npm audit --omit=dev`: nenhuma vulnerabilidade de runtime.
 
 ## Socket Herdr real

@@ -1,74 +1,76 @@
 # Política de seleção de modelos
 
-A fonte única concreta é `src/models/policy.json`. Ela permite somente OpenAI
-Codex e DeepSeek. IDs de modelo ficam internos: a tool recebe capacidade mínima
-e o resolver escolhe o menor modelo suficiente entre os disponíveis.
+A Política de Modelos é configuração JSON carregada no startup da extensão e em
+`/reload`. O módulo TypeScript `src/models/policy.ts` concentra descoberta,
+validação, resolução e erros; callers recebem um resolver já ligado à Política
+Efetiva.
 
-## Capacidade exposta
+## Descoberta e precedência
 
-- `bounded`: trabalho localizado, explícito e pouco agêntico; esforço automático
-  `low`;
-- `scoped`: missão delimitada, multi-etapas e observável; esforço `medium`;
-- `cross_cutting`: vários módulos, exploração ampla ou ambiguidade material;
-  esforço `medium`;
-- `high_agency`: missão ampla, longa e autônoma; esforço `high`.
+A política usa substituição integral, nunca merge:
 
-Uma etapa trivial ainda deve permanecer com o agente principal. Capacidade mede
-demanda mínima do filho, não cargo, preço ou quantidade isolada de arquivos.
+1. projeto confiável: `.pi/holistic-subagents/model-policy.json`;
+2. global: `$PI_CODING_AGENT_DIR/holistic-subagents/model-policy.json` — por
+   padrão, `~/.pi/agent/holistic-subagents/model-policy.json`.
 
-## Reasoning effort
+Se nenhum arquivo existir, a extensão copia
+`src/models/default-policy.json` para o caminho global. Essa criação acontece
+uma única vez; atualizações do pacote nunca sobrescrevem configuração do usuário.
+Uma política presente mas inválida falha explicitamente e não usa fallback.
 
-`effort=auto` ou omitir o campo usa o padrão da capacidade. Override:
+A configuração do projeto só é lida quando o projeto está confiável no Pi.
+Alterações entram em vigor na próxima sessão ou após `/reload`. Modelos
+configurados mas ausentes em `ctx.modelRegistry` geram warning no startup e são
+filtrados novamente ao resolver cada delegação.
 
-- `low`: procedimento conhecido e poucas decisões;
-- `medium`: ponto de partida equilibrado para trabalho multi-etapas;
-- `high`: ambiguidade, hipóteses concorrentes, risco ou validação difícil.
+## Vocabulário estável
 
-O resolver traduz o esforço para o nível nativo suportado e registra quando a
-tradução não é exata. DeepSeek, por exemplo, eleva `low` e `medium` para `high`.
-Mais thinking não é garantia de qualidade: suba apenas quando a tarefa ou evals
-mostrarem ganho.
+A implementação fixa apenas conceitos usados por toda a delegação:
 
-## Worker versus reviewer
+- capacidades: `bounded|scoped|cross_cutting|high_agency`;
+- finalidades: `execution|verification`;
+- níveis reconhecidos pelo Pi: `off|minimal|low|medium|high|xhigh|max`.
 
-A policy separa elegibilidade por propósito:
+O JSON escolhe providers, modelos permitidos, esforços expostos, defaults,
+elegibilidade, ranks e traduções `thinkingMap`. O schema da tool é derivado da
+Política Efetiva por um adapter TypeBox; não repete os esforços configurados.
 
-- execução `bounded|scoped`: Luna normalmente vence; Flash permanece
-  alternativa;
-- execução `cross_cutting`: DeepSeek V4 Pro vence; GPT-5.6 Terra é fallback;
-- execução `high_agency`: GPT-5.6 Sol;
-- `purpose=verification`: somente GPT-5.6 Sol, com esforço automático `high`.
+## Política padrão
 
-DeepSeek é worker, não reviewer. `allowDegraded` nunca torna um modelo inelegível
-para verification em reviewer. Para review independente, use contexto limpo,
-brief adversarial, artefato estável e critérios objetivos; diversidade de
-provider não compensa um reviewer pior.
+- execução `bounded`: GPT-5.6 Luna `xhigh`;
+- execução `scoped`: GPT-5.6 Luna `max`;
+- execução `cross_cutting`: GPT-5.6 Terra `xhigh`;
+- execução `high_agency`: GPT-5.6 Sol `medium`;
+- `purpose=verification`: somente GPT-5.6 Sol `medium`.
+
+Na política padrão, Luna nunca é lançada em `medium`: pedidos menores são
+elevados para `xhigh`. Terra é normalizada para `xhigh`; Sol é limitado a
+`low|medium`.
 
 ## Filtros e ordem
 
 1. disponibilidade no `ctx.modelRegistry`;
 2. elegibilidade `execution|verification`;
 3. contexto, modalidades, tools e harness obrigatórios;
-4. provider/família evitado quando solicitado;
+4. família evitada quando solicitado;
 5. menor capacidade igual ou superior à solicitada;
 6. preferência local e limites independentes de custo/latência;
-7. tradução de thinking.
+7. tradução de thinking pela Política Efetiva.
 
 Se somente candidato de capacidade inferior estiver disponível, a extensão
-retorna alternativas degradadas e exige `allowDegraded=true` explícito. Nunca
-há fallback fora de OpenAI Codex/DeepSeek nem entre propósitos inelegíveis.
+retorna alternativas degradadas e exige `allowDegraded=true` explícito. A
+allowlist vem do JSON; não existe fallback para modelo ausente da Política
+Efetiva nem entre finalidades inelegíveis.
 
-## Base da política
+## Base da política padrão
 
 - [OpenAI — Model guidance](https://developers.openai.com/api/docs/guides/latest-model):
-  `medium` como baseline, `low` para latência e níveis altos somente com ganho
-  medido; Luna/Terra/Sol como eficiente/equilibrado/frontier.
-- [DeepSeek — Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode):
-  thinking padrão `high`, com `low`/`medium` mapeados para `high`.
+  esforço deve ser ajustado com evals;
+- [OpenAI — GPT-5.6 price-performance](https://openai.com/index/advancing-the-price-performance-frontier-with-gpt-5-6/):
+  Sol resolve incerteza e planeja; Luna executa mudanças bem especificadas,
+  testes e avaliações em volume;
 - [OpenAI — Practical guide to building agents](https://openai.com/business/guides-and-resources/a-practical-guide-to-building-ai-agents/):
-  estabelecer baseline com modelo capaz, criar evals e só então reduzir custo e
-  latência com modelos menores.
+  estabelecer baseline, criar evals e só então otimizar custo e latência.
 
-O rank que prioriza Pro sobre Terra é uma preferência operacional deliberada
-para workers. Continue comparando sucesso, completude, evidências, tokens,
-latência, custo, chamadas e retries em tarefas representativas.
+Continue comparando sucesso, completude, evidências, tokens, latência, custo,
+chamadas e retries em tarefas representativas antes de editar a política.

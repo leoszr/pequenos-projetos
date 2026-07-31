@@ -188,10 +188,9 @@ preferência/custo/latência. Disponibilidade virá de
 virão dos metadados do próprio modelo. O resultado registrará candidato,
 alternativas, tradução de thinking e qualidade/degradação.
 
-A allowlist aceitará exclusivamente modelos dos providers `openai-codex` e
-`deepseek`. Independência, quando solicitada, escolherá outro provider entre
-esses dois (ou falhará explicitamente se nenhum candidato compatível estiver
-disponível); nunca introduzirá um terceiro provider como fallback.
+A allowlist, providers, modelos e perfis de thinking virão da Política Efetiva
+em JSON. A política padrão usará GPT-5.6 Luna, Terra e Sol; revisão independente
+também exige sessão e contexto limpos.
 
 `skills/holistic-subagents/references/model-selection.md` passará a explicar a classificação e será
 validado contra a política. `skills/holistic-subagents/references/model-commands.md` será removido: a
@@ -246,7 +245,8 @@ descartar.
 - `src/herdr/client.ts` — transporte NDJSON, handshake, requests e subscription.
 - `src/herdr/topologies.ts` — pane/tab/worktree, startup e metadata de ownership.
 - `src/herdr/reconcile.ts` — cruzamento entre registro e snapshot/eventos.
-- `src/models/policy.json` e `src/models/resolve.ts` — fonte única e resolução.
+- `src/models/default-policy.json` e `src/models/policy.ts` — default editável,
+  descoberta, validação e resolução da Política Efetiva.
 - `src/protocol/brief.ts` e `src/protocol/callback.ts` — brief, perguntas,
   token, correlação e sinais.
 - `src/security/authority.ts` — declaração de autoridade, baseline, auditoria
@@ -308,7 +308,7 @@ descartar.
       cancelamento e testes contra servidor fake/schema atual.
 - [x] 4. Implementar pane, tab e worktree com startup interativo, readiness,
       metadata e ledger persistido antes/depois de cada side effect.
-- [x] 5. Implementar política estruturada OpenAI/DeepSeek e resolver
+- [x] 5. Implementar Política de Modelos JSON injetável e resolver
       determinístico usando o model registry do Pi, incluindo independência e
       fallback degradado.
 - [x] 6. Implementar perguntas pai/filho, callback autenticado, hook `input`,
@@ -372,5 +372,5 @@ descartar.
 - O principal recebe eventos, mas só `holistic_manage accept` após inspeção
   registra aceite; conclusão do filho nunca equivale a validação.
 - Política de modelos e launch argv têm uma única fonte estruturada e nenhum
-  fallback fora da allowlist OpenAI/DeepSeek; thinking fica limitado a `low`,
-  `medium` e `high`.
+  fallback fora da allowlist da Política Efetiva; a política padrão usa Luna
+  `xhigh|max`, Terra `xhigh` e Sol `low|medium`.

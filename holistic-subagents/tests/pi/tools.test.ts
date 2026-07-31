@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 import type { DelegationService } from "../../src/domain/service.ts";
 import { registerHolisticTools } from "../../src/pi/tools.ts";
+import { parseModelPolicy, validateModelPolicy } from "../../src/models/policy.ts";
+import { modelRequestSchemas } from "../../src/pi/model-policy-schema.ts";
+
+const policy = parseModelPolicy(
+  readFileSync(new URL("../../src/models/default-policy.json", import.meta.url), "utf8"),
+);
 
 interface RegisteredTool {
   name: string;
@@ -10,6 +17,23 @@ interface RegisteredTool {
 }
 
 describe("holistic_create tool", () => {
+  it("derives the effort schema from the injected policy", () => {
+    const maxOnly = validateModelPolicy({
+      ...policy,
+      efforts: ["max"],
+      defaultEffort: { bounded: "max", scoped: "max", cross_cutting: "max", high_agency: "max" },
+      purposeDefaultEffort: { verification: "max" },
+      models: policy.models.map((model) => ({
+        ...model,
+        thinkingMap: { max: model.thinkingMap.max ?? "max" },
+      })),
+    });
+    const schema = JSON.stringify(modelRequestSchemas(maxOnly).effort);
+    expect(schema).toContain('"const":"auto"');
+    expect(schema).toContain('"const":"max"');
+    expect(schema).not.toContain('"const":"xhigh"');
+  });
+
   it("exposes capability plus automatic effort and keeps model IDs internal", async () => {
     const tools: RegisteredTool[] = [];
     const create = vi.fn(async (request) => ({
@@ -26,6 +50,7 @@ describe("holistic_create tool", () => {
     registerHolisticTools(
       { registerTool: (tool: RegisteredTool) => tools.push(tool) } as never,
       () => ({ create } as unknown as DelegationService),
+      policy,
     );
 
     const tool = tools.find((candidate) => candidate.name === "holistic_create");

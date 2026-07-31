@@ -3,27 +3,18 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 import type { DelegationService, ManageAction } from "../domain/service.ts";
-import type { DelegationRequest } from "../domain/types.ts";
-
-const capability = Type.Union([
-  Type.Literal("bounded", { description: "Localized, explicit, low-agency work" }),
-  Type.Literal("scoped", { description: "Well-defined multi-step implementation or investigation" }),
-  Type.Literal("cross_cutting", { description: "Several modules, wider exploration, or material ambiguity" }),
-  Type.Literal("high_agency", { description: "Broad, long-horizon mission requiring sustained autonomy" }),
-], { description: "Minimum task capability; concrete model selection stays automatic" });
-const effort = Type.Union([
-  Type.Literal("auto", { description: "Use the capability default" }),
-  Type.Literal("low", { description: "Known procedure with few decisions" }),
-  Type.Literal("medium", { description: "Balanced default for multi-step work" }),
-  Type.Literal("high", { description: "Ambiguity, competing hypotheses, risk, or difficult validation" }),
-], { description: "Reasoning policy; omit or use auto for the capability default" });
+import type { Capability, DelegationRequest, ThinkingLevel } from "../domain/types.ts";
+import type { ModelPolicy } from "../models/policy.ts";
+import { modelRequestSchemas } from "./model-policy-schema.ts";
 
 export function registerHolisticTools(
   pi: ExtensionAPI,
   getService: () => DelegationService,
+  policy: ModelPolicy,
   onChange: () => void = () => undefined,
   canCreate: () => boolean = () => true,
 ): void {
+  const { capability, effort } = modelRequestSchemas(policy);
   pi.registerTool({
     name: "holistic_create",
     label: "Create Delegation",
@@ -50,11 +41,15 @@ export function registerHolisticTools(
       minimumCapability: capability,
       effort: Type.Optional(effort),
       allowDegraded: Type.Optional(Type.Boolean()),
-      purpose: Type.Optional(Type.Union([Type.Literal("execution"), Type.Literal("verification")])),
-      reviewOf: Type.Optional(Type.String()),
+      purpose: Type.Optional(Type.Union(
+        [Type.Literal("execution"), Type.Literal("verification")],
+        { description: "Delegation role; reviewOf infers verification, otherwise defaults to execution" },
+      )),
+      reviewOf: Type.Optional(Type.String({
+        description: "Delegation being reviewed; implies verification and cannot use execution purpose",
+      })),
       baseRef: Type.Optional(Type.String()),
       branch: Type.Optional(Type.String()),
-      avoidProvider: Type.Optional(Type.Union([Type.Literal("openai-codex"), Type.Literal("deepseek")])),
     }, { additionalProperties: false }),
     async execute(_id, params, signal) {
       if (!canCreate()) {
@@ -73,12 +68,9 @@ export function registerHolisticTools(
         baseRef: params.baseRef,
         branch: params.branch,
         model: {
-          minimumCapability: params.minimumCapability,
-          effort: params.effort === "auto" ? undefined : params.effort,
+          minimumCapability: params.minimumCapability as Capability,
+          effort: params.effort === "auto" ? undefined : params.effort as ThinkingLevel,
           allowDegraded: params.allowDegraded,
-          independence: params.avoidProvider
-            ? { required: true, avoidProvider: params.avoidProvider }
-            : undefined,
         },
       };
       try {

@@ -9,10 +9,9 @@ TypeScript executa delegações persistentes pelo socket do Herdr.
 - pane, tab e worktree sem foco;
 - callbacks autenticados para dúvidas, input obrigatório e handoff;
 - conversa e correção na mesma sessão filha;
-- capacidade semântica, policy OpenAI Codex/DeepSeek estruturada e
-  `effort=auto|low|medium|high`;
-- DeepSeek V4 Pro priorizado para workers transversais e GPT-5.6 Sol exclusivo
-  para verification;
+- capacidade semântica e Política de Modelos JSON injetável;
+- Luna `xhigh|max` para volume, Terra `xhigh` para execução transversal e Sol
+  `low|medium` para alta agência e verification;
 - auditoria declarativa de autoridade e cleanup por ownership;
 - cinco tools `holistic_*`, dashboard `/holistic` e modo de delegação opt-in.
 
@@ -53,6 +52,26 @@ antiga no lugar da skill do pacote.
 
 Também é possível instalar a origem Git/NPM quando publicada. Abra uma nova
 sessão Pi após instalar e confirme `pi list` e `herdr integration status`.
+
+## Política de modelos
+
+Na primeira sessão coordenadora, a extensão cria a política global editável em:
+
+```text
+~/.pi/agent/holistic-subagents/model-policy.json
+```
+
+Se `PI_CODING_AGENT_DIR` estiver definido, ele substitui `~/.pi/agent`. Um
+projeto confiável pode substituir integralmente a política global com:
+
+```text
+.pi/holistic-subagents/model-policy.json
+```
+
+Não há merge. Edite o JSON e execute `/reload` ou abra outra sessão. Arquivo
+inválido desativa a criação de delegações com erro explícito; modelos ausentes
+do registry do Pi geram warning. O arquivo global é criado apenas quando
+ausente e nunca é sobrescrito por atualização do pacote.
 
 ## Uso
 

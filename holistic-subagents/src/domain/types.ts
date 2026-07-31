@@ -13,18 +13,30 @@ export type DelegationState =
   | "closing"
   | "closed";
 
-export type DelegationPurpose = "execution" | "verification";
+export const DELEGATION_PURPOSES = ["execution", "verification"] as const;
+export type DelegationPurpose = typeof DELEGATION_PURPOSES[number];
 export type DelegationTopology = "pane" | "tab" | "worktree";
 export type AuthorityMode =
   | "read_only"
   | "controlled_mutation"
   | "isolated_mutation";
-export type Capability =
-  | "bounded"
-  | "scoped"
-  | "cross_cutting"
-  | "high_agency";
-export type CanonicalEffort = "low" | "medium" | "high";
+export const CAPABILITIES = [
+  "bounded",
+  "scoped",
+  "cross_cutting",
+  "high_agency",
+] as const;
+export type Capability = typeof CAPABILITIES[number];
+export const PI_THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type ThinkingLevel = typeof PI_THINKING_LEVELS[number];
 
 export interface AuthorityPolicy {
   mode: AuthorityMode;
@@ -44,13 +56,12 @@ export interface TechnicalRequirements {
 
 export interface IndependenceRequirement {
   required: boolean;
-  avoidProvider?: "openai-codex" | "deepseek";
   avoidFamily?: string;
 }
 
 export interface ModelRequest {
   minimumCapability: Capability;
-  effort?: CanonicalEffort;
+  effort?: ThinkingLevel;
   purpose?: DelegationPurpose;
   requirements?: TechnicalRequirements;
   independence?: IndependenceRequirement;
@@ -59,17 +70,17 @@ export interface ModelRequest {
 
 export interface ModelResolution {
   model: string;
-  provider: "openai-codex" | "deepseek";
+  provider: string;
   family: string;
-  thinking: CanonicalEffort;
+  thinking: ThinkingLevel;
   requestedCapability: Capability;
   providedCapability: Capability;
   degradedCapability: boolean;
   exactThinking: boolean;
   alternatives: string[];
   reason: string;
-  requestedEffort: CanonicalEffort | "auto";
-  effectiveEffort: CanonicalEffort;
+  requestedEffort: ThinkingLevel | "auto";
+  effectiveEffort: ThinkingLevel;
   purpose: DelegationPurpose;
 }
 
