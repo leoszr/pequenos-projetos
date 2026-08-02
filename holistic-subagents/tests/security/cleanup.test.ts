@@ -75,4 +75,29 @@ describe("cleanup", () => {
       CleanupBlockedError,
     );
   });
+
+  it("closes a shared-tab pane without closing the shared tab", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "pane.get") {
+        return { pane: { tokens: { delegation: "d1", owner: "owner" } } };
+      }
+      return { type: "ok" };
+    });
+    const cleanup = new DelegationCleanup(
+      { request } as never,
+      { run: vi.fn(async () => ({ stdout: "", stderr: "", code: 0 })) },
+    );
+    const run = delegation();
+    run.request = { ...run.request, topology: "pane", authority: { mode: "read_only", allowedPaths: [] } };
+    run.resources = [
+      { kind: "pane", id: "p1", createdByExtension: true, ownershipToken: "owner" },
+      { kind: "tab", id: "t-shared", createdByExtension: true, ownershipToken: "owner", shared: true },
+    ];
+
+    const result = await cleanup.cleanup(run, { onResource: vi.fn() });
+
+    expect(request).toHaveBeenCalledWith("pane.close", { pane_id: "p1" });
+    expect(request).not.toHaveBeenCalledWith("tab.close", expect.anything());
+    expect(result.preserved).toContainEqual(expect.objectContaining({ kind: "tab", id: "t-shared" }));
+  });
 });

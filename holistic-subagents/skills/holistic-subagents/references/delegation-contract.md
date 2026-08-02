@@ -10,7 +10,9 @@ brief interativo.
 - `cwd` e contexto relevante;
 - `authority.mode`, paths permitidos/proibidos;
 - `acceptanceEvidence`;
-- `topology`;
+- `topology`: `pane` agrupa o filho em uma tab auxiliar com até três panes;
+  `tab` cria uma tab auxiliar dedicada; `worktree` cria checkout/workspace
+  isolado. Nenhuma opção usa a tab do coordenador;
 - `minimumCapability` e `effort=auto` ou um esforço exposto pela Política
   Efetiva;
 - `reviewOf` quando revisar outro trabalho; ele infere `purpose=verification`,

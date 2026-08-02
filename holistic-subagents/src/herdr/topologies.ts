@@ -3,6 +3,7 @@ import type {
   DelegationTopology,
 } from "../domain/types.ts";
 import { HerdrRequestError, type HerdrRequestOptions } from "./client.ts";
+import { sharedTabResource, type SharedTabTarget } from "./shared-tab-pool.ts";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
@@ -31,6 +32,7 @@ export interface LaunchSpec {
   baseRef?: string;
   branch?: string;
   worktreeRelativeCwd?: string;
+  sharedTab?: SharedTabTarget;
   startupTimeoutMs?: number;
   onResource(resource: DelegationResource): void | Promise<void>;
 }
@@ -114,20 +116,44 @@ export class HerdrTopologyManager {
     let initialPaneId: string | undefined;
 
     if (spec.topology === "pane") {
-      const created = await this.#client.request<PaneCreatedResult>(
-        "pane.split",
-        {
-          target_pane_id: spec.parentPaneId,
-          direction: spec.split ?? "right",
-          cwd: spec.cwd,
-          env: spec.env,
-          focus: false,
-        },
-        { signal, timeoutMs: 30_000 },
-      );
-      initialPaneId = created.pane.pane_id;
-      targetTabId = created.pane.tab_id;
-      targetWorkspaceId = created.pane.workspace_id;
+      if (spec.sharedTab) {
+        const created = await this.#client.request<PaneCreatedResult>(
+          "pane.split",
+          {
+            target_pane_id: spec.sharedTab.anchorPaneId,
+            direction: spec.split ?? "right",
+            cwd: spec.cwd,
+            env: spec.env,
+            focus: false,
+          },
+          { signal, timeoutMs: 30_000 },
+        );
+        if (created.pane.tab_id !== spec.sharedTab.tabId) {
+          throw new Error(`Herdr split pane into unexpected tab ${created.pane.tab_id}`);
+        }
+        initialPaneId = created.pane.pane_id;
+        targetTabId = created.pane.tab_id;
+        targetWorkspaceId = created.pane.workspace_id;
+      } else {
+        const created = await this.#client.request<TabCreatedResult>(
+          "tab.create",
+          {
+            workspace_id: spec.parentWorkspaceId,
+            cwd: spec.cwd,
+            label: "Subagents",
+            env: spec.env,
+            focus: false,
+          },
+          { signal, timeoutMs: 30_000 },
+        );
+        targetWorkspaceId = created.tab.workspace_id;
+        targetTabId = created.tab.tab_id;
+        initialPaneId = created.root_pane.pane_id;
+      }
+      if (targetTabId === spec.parentTabId) {
+        throw new Error("Refusing to launch a subagent in the coordinator tab");
+      }
+      await add(sharedTabResource(targetTabId));
       await add({ kind: "pane", id: initialPaneId, label: spec.name });
     }
 
@@ -146,6 +172,9 @@ export class HerdrTopologyManager {
       targetWorkspaceId = created.tab.workspace_id;
       targetTabId = created.tab.tab_id;
       initialPaneId = created.root_pane.pane_id;
+      if (targetTabId === spec.parentTabId) {
+        throw new Error("Refusing to launch a subagent in the coordinator tab");
+      }
       await add({ kind: "tab", id: targetTabId, label: spec.name });
       await add({ kind: "pane", id: initialPaneId, label: spec.name });
     }

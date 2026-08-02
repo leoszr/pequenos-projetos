@@ -19,7 +19,8 @@ assina eventos. Não derive IDs de labels ou layout.
 
 ## Operações materializadas
 
-- pane: `pane.split` no pane pai, seguido de `agent.start` no pane retornado;
+- pane: cria uma tab auxiliar quando não há vaga ou usa `pane.split` em uma tab
+  auxiliar existente com menos de três panes; nunca divide o pane/tab pai;
 - tab: `tab.create` e `agent.start` no root pane retornado;
 - worktree: `worktree.create`, instalação do ambiente no shell e `agent.start`
   no root pane retornado;
@@ -27,7 +28,8 @@ assina eventos. Não derive IDs de labels ou layout.
   session hook do Pi, e `agent.prompt` envia o brief atomicamente aguardando
   `working`;
 - runtime: subscription de status e callbacks semânticos autenticados;
-- cleanup: `pane.close`, `tab.close` ou `worktree.remove`, conforme o ledger.
+- cleanup: `pane.close` preserva a tab auxiliar compartilhada; tabs dedicadas
+  usam `tab.close`; worktrees usam `worktree.remove`, conforme o ledger.
 
 Pi sempre inicia interativamente. O brief não é argumento one-shot. Extensões,
 skills e context files normais permanecem carregados, inclusive a extensão que

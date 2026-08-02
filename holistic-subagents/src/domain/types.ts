@@ -136,6 +136,8 @@ export interface DelegationResource {
   id: string;
   createdByExtension: boolean;
   ownershipToken: string;
+  /** Shared coordinator resource; a Session must not remove it directly. */
+  shared?: boolean;
   path?: string;
   label?: string;
   preserved?: boolean;

@@ -26,13 +26,19 @@ function spec(topology: "pane" | "tab" | "worktree"): LaunchSpec {
 
 function requester(topology: "pane" | "tab" | "worktree") {
   const methods: string[] = [];
-  const request = vi.fn(async (method: string) => {
+  const panes = new Map([
+    ["p-parent", { pane_id: "p-parent", tab_id: "t-parent", workspace_id: "w-parent" }],
+    ["p-anchor", { pane_id: "p-anchor", tab_id: "t-shared", workspace_id: "w-parent" }],
+  ]);
+  const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
     methods.push(method);
     if (method === "tab.create") {
+      const pane = { pane_id: "p-root", tab_id: "t-new", workspace_id: "w-parent" };
+      panes.set(pane.pane_id, pane);
       return {
         type: "tab_created",
         tab: { tab_id: "t-new", workspace_id: "w-parent" },
-        root_pane: { pane_id: "p-root", tab_id: "t-new", workspace_id: "w-parent" },
+        root_pane: pane,
       };
     }
     if (method === "worktree.create") {
@@ -45,18 +51,28 @@ function requester(topology: "pane" | "tab" | "worktree") {
       };
     }
     if (method === "pane.split") {
+      const target = panes.get(String(params?.target_pane_id));
+      const pane = {
+        pane_id: "p-agent",
+        tab_id: target?.tab_id ?? "t-parent",
+        workspace_id: target?.workspace_id ?? "w-parent",
+      };
+      panes.set(pane.pane_id, pane);
       return {
         type: "pane_info",
-        pane: { pane_id: "p-agent", tab_id: "t-parent", workspace_id: "w-parent" },
+        pane,
       };
     }
     if (method === "agent.start") {
+      const pane = panes.get(String(params?.pane_id)) ?? {
+        pane_id: "p-root",
+        tab_id: "t-new",
+        workspace_id: topology === "worktree" ? "w-new" : "w-parent",
+      };
       return {
         type: "agent_started",
         agent: {
-          pane_id: topology === "pane" ? "p-agent" : "p-root",
-          tab_id: topology === "pane" ? "t-parent" : "t-new",
-          workspace_id: topology === "worktree" ? "w-new" : "w-parent",
+          ...pane,
           agent_status: "idle",
           interactive_ready: true,
           agent_session: { agent: "pi", value: "/tmp/session.jsonl" },
@@ -69,18 +85,41 @@ function requester(topology: "pane" | "tab" | "worktree") {
 }
 
 describe("HerdrTopologyManager", () => {
-  it("starts a sibling pane and persists its ledger before dispatch", async () => {
+  it("creates a shared auxiliary tab instead of splitting the coordinator tab", async () => {
     const client = requester("pane");
     const input = spec("pane");
     const result = await new HerdrTopologyManager(client).launch(input);
-    expect(result.paneId).toBe("p-agent");
+    expect(result.paneId).toBe("p-root");
+    expect(result.tabId).toBe("t-new");
+    expect(result.tabId).not.toBe(input.parentTabId);
     expect(input.onResource).toHaveBeenCalledWith(expect.objectContaining({ kind: "pane" }));
-    expect(client.methods.slice(0, 3)).toEqual(["pane.split", "pane.process_info", "agent.start"]);
+    expect(input.onResource).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "tab",
+      id: "t-new",
+      shared: true,
+    }));
+    expect(client.methods.slice(0, 3)).toEqual(["tab.create", "pane.process_info", "agent.start"]);
     expect(client.methods.indexOf("agent.start")).toBeLessThan(client.methods.indexOf("agent.prompt"));
     expect(client.methods).toContain("pane.report_metadata");
     expect(client.request).toHaveBeenCalledWith(
       "agent.start",
-      expect.objectContaining({ kind: "pi", pane_id: "p-agent", args: input.argv.slice(1) }),
+      expect.objectContaining({ kind: "pi", pane_id: "p-root", args: input.argv.slice(1) }),
+      expect.anything(),
+    );
+  });
+
+  it("splits an existing shared auxiliary tab", async () => {
+    const client = requester("pane");
+    const input = {
+      ...spec("pane"),
+      sharedTab: { tabId: "t-shared", anchorPaneId: "p-anchor" },
+    };
+    const result = await new HerdrTopologyManager(client).launch(input);
+    expect(result).toMatchObject({ paneId: "p-agent", tabId: "t-shared" });
+    expect(client.methods.slice(0, 3)).toEqual(["pane.split", "pane.process_info", "agent.start"]);
+    expect(client.request).toHaveBeenCalledWith(
+      "pane.split",
+      expect.objectContaining({ target_pane_id: "p-anchor", focus: false }),
       expect.anything(),
     );
   });

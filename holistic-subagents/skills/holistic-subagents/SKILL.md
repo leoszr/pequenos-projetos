@@ -37,7 +37,10 @@ Before `holistic_create`, specify:
 
 - an observable mission and minimum context;
 - acceptance evidence and return shape;
-- absolute cwd and topology: pane, tab, or worktree;
+- absolute cwd and topology: use `pane` for the shared auxiliary-tab pool
+  (maximum three panes per tab), `tab` for a dedicated auxiliary tab, or
+  `worktree` for an isolated checkout/workspace; no topology uses the parent
+  tab;
 - authority: read-only, controlled mutation, or isolated mutation;
 - allowed/forbidden paths;
 - minimum task capability and reasoning policy;

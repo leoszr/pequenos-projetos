@@ -3,7 +3,11 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { applyInfrastructureEvent, reconcileSnapshot } from "../herdr/reconcile.ts";
 import type { HerdrClient, HerdrSnapshot, HerdrSubscriptionEvent } from "../herdr/client.ts";
-import { HerdrTopologyManager } from "../herdr/topologies.ts";
+import { HerdrTopologyManager, type LaunchSpec } from "../herdr/topologies.ts";
+import {
+  findSharedTabTarget,
+  sessionRunsOutsideCoordinatorTab,
+} from "../herdr/shared-tab-pool.ts";
 import type { AvailableModel, ModelPolicyResolver } from "../models/policy.ts";
 import {
   buildDelegationBrief,
@@ -49,6 +53,8 @@ export interface InspectResult {
 }
 
 export type ManageAction = "focus" | "accept" | "fail" | "close" | "cleanup";
+
+const SHARED_TAB_POOL_QUEUE = "__holistic_shared_tab_pool__";
 
 export class DelegationService {
   readonly #repository: DelegationRepository;
@@ -110,6 +116,7 @@ export class DelegationService {
     const compatible = normalizedRequest.requiresCleanContext ? undefined : this.#repository.listSessions()
       .filter((session) => !session.sealed
         && ["idle", "busy", "starting"].includes(session.state)
+        && sessionRunsOutsideCoordinatorTab(session, this.#identity.parentTabId)
         && sessionEnvironmentCompatible(session, normalizedRequest, trustScope)
         && authorityContained(
           normalizedRequest.authority,
@@ -218,48 +225,57 @@ export class DelegationService {
         this.#repository.save(delegation, "transition");
         return delegation;
       }
-      const launch = await this.#topologies.launch(
-        {
-          delegationId: session.id,
-          parentSessionId: delegation.parentSessionId,
-          ownershipToken: ownershipToken(delegation),
-          name: normalizedRequest.name,
-          cwd: normalizedRequest.cwd,
-          topology: normalizedRequest.topology,
-          parentPaneId: this.#identity.parentPaneId,
-          parentWorkspaceId: this.#identity.parentWorkspaceId,
-          parentTabId: this.#identity.parentTabId,
-          argv: buildPiArgv(delegation),
-          env: buildChildEnv(delegation),
-          brief: (runtimeCwd) =>
-            buildDelegationBrief({
-              ...delegation,
-              runtimeCwd,
-              request: { ...delegation.request, cwd: runtimeCwd },
-            }),
-          baseRef: normalizedRequest.baseRef,
-          branch: normalizedRequest.branch,
-          worktreeRelativeCwd: delegation.authorityBaseline?.gitRoot
-            ? relative(delegation.authorityBaseline.gitRoot, normalizedRequest.cwd)
-            : undefined,
-          onResource: async (resource) => {
-            if (resource.kind === "worktree" && resource.path) {
-              const auditCwd = delegation.authorityBaseline?.gitRoot
-                ? join(
-                    resource.path,
-                    relative(delegation.authorityBaseline.gitRoot, normalizedRequest.cwd),
-                  )
-                : resource.path;
-              const baseline = await captureAuthorityBaseline(this.#runner, auditCwd);
-              session = { ...session, authorityBaseline: baseline };
-              delegation = { ...delegation, authorityBaseline: baseline };
-            }
-            session = upsertSessionResource(session, resource);
-            this.#repository.saveSession(session, "resource");
-          },
+      const launchSpec: LaunchSpec = {
+        delegationId: session.id,
+        parentSessionId: delegation.parentSessionId,
+        ownershipToken: ownershipToken(delegation),
+        name: normalizedRequest.name,
+        cwd: normalizedRequest.cwd,
+        topology: normalizedRequest.topology,
+        parentPaneId: this.#identity.parentPaneId,
+        parentWorkspaceId: this.#identity.parentWorkspaceId,
+        parentTabId: this.#identity.parentTabId,
+        argv: buildPiArgv(delegation),
+        env: buildChildEnv(delegation),
+        brief: (runtimeCwd) =>
+          buildDelegationBrief({
+            ...delegation,
+            runtimeCwd,
+            request: { ...delegation.request, cwd: runtimeCwd },
+          }),
+        baseRef: normalizedRequest.baseRef,
+        branch: normalizedRequest.branch,
+        worktreeRelativeCwd: delegation.authorityBaseline?.gitRoot
+          ? relative(delegation.authorityBaseline.gitRoot, normalizedRequest.cwd)
+          : undefined,
+        onResource: async (resource) => {
+          if (resource.kind === "worktree" && resource.path) {
+            const auditCwd = delegation.authorityBaseline?.gitRoot
+              ? join(
+                  resource.path,
+                  relative(delegation.authorityBaseline.gitRoot, normalizedRequest.cwd),
+                )
+              : resource.path;
+            const baseline = await captureAuthorityBaseline(this.#runner, auditCwd);
+            session = { ...session, authorityBaseline: baseline };
+            delegation = { ...delegation, authorityBaseline: baseline };
+          }
+          session = upsertSessionResource(session, resource);
+          this.#repository.saveSession(session, "resource");
         },
-        signal,
-      );
+      };
+      const launch = normalizedRequest.topology === "pane"
+        ? await this.#serialized(SHARED_TAB_POOL_QUEUE, () => this.#topologies.launch(
+            {
+              ...launchSpec,
+              sharedTab: findSharedTabTarget(
+                this.#repository.listSessions(),
+                this.#identity.parentTabId,
+              ),
+            },
+            signal,
+          ))
+        : await this.#topologies.launch(launchSpec, signal);
       delegation = recordRuntimeStatus({
         ...transitionDelegation(delegation, "working"),
         health: "working",

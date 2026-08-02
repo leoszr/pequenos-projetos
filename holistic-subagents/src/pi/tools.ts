@@ -37,7 +37,12 @@ export function registerHolisticTools(
         requireExternalSandbox: Type.Optional(Type.Boolean()),
       }),
       acceptanceEvidence: Type.Array(Type.String()),
-      topology: Type.Union([Type.Literal("pane"), Type.Literal("tab"), Type.Literal("worktree")]),
+      topology: Type.Union(
+        [Type.Literal("pane"), Type.Literal("tab"), Type.Literal("worktree")],
+        {
+          description: "pane uses a shared auxiliary tab (maximum 3 panes); tab creates a dedicated auxiliary tab; worktree creates an isolated checkout/workspace. No option uses the coordinator tab.",
+        },
+      ),
       minimumCapability: capability,
       effort: Type.Optional(effort),
       allowDegraded: Type.Optional(Type.Boolean()),

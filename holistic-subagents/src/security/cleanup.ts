@@ -1,5 +1,6 @@
 import type { Delegation, DelegationResource } from "../domain/types.ts";
 import type { HerdrRequester } from "../herdr/topologies.ts";
+import { isSharedTabResource } from "../herdr/shared-tab-pool.ts";
 import type { CommandRunner } from "./authority.ts";
 
 export interface CleanupOptions {
@@ -66,6 +67,12 @@ export class DelegationCleanup {
         throw new CleanupBlockedError(`Resource ${resource.kind}:${resource.id} has no matching ownership`);
       }
       if (resource.kind === "artifact" && options.preserveArtifacts !== false) {
+        const kept = { ...resource, preserved: true };
+        preserved.push(kept);
+        await options.onResource(kept);
+        continue;
+      }
+      if (isSharedTabResource(resource)) {
         const kept = { ...resource, preserved: true };
         preserved.push(kept);
         await options.onResource(kept);

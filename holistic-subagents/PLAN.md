@@ -107,8 +107,9 @@ Fluxo de criação:
 1. validar ambiente, request, autoridade e política de modelo;
 2. registrar `prepared` antes de criar qualquer recurso;
 3. materializar pane, tab ou worktree e registrar imediatamente cada recurso;
-4. criar o destino com `pane.split`, `tab.create` ou `worktree.create` e iniciar
-   Pi com `agent.start --kind pi --pane`, usando argumentos estruturados;
+4. alocar panes em tabs auxiliares com até três panes cada, criar tab dedicada
+   ou worktree quando solicitado e iniciar Pi com
+   `agent.start --kind pi --pane`, usando argumentos estruturados;
 5. injetar depth, parent pane/session, delegation ID, callback token e política
    de autoridade do filho;
 6. deixar `agent.start` confirmar a prontidão interativa;
@@ -116,9 +117,11 @@ Fluxo de criação:
 8. manter subscription para mudança de estado, saída/fechamento inesperado e
    recursos removidos, sem polling.
 
-Pane será o padrão; tab será usado para trabalho visualmente longo; worktree
-para mutações concorrentes ou snapshot estável. O adaptador esconderá as
-diferenças de criação e cleanup, mas preservará a topologia no registro.
+Pane será o padrão e nunca dividirá a tab do coordenador. O adaptador preencherá
+tabs auxiliares com no máximo três panes; worker e reviewer compatíveis podem
+compartilhar uma delas. Tab será usada para isolamento visual dedicado;
+worktree, para mutações concorrentes ou snapshot estável. O adaptador esconderá
+as diferenças de criação e cleanup, mas preservará a topologia no registro.
 
 ### 4. Separar eventos de infraestrutura de eventos semânticos
 

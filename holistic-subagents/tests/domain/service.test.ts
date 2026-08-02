@@ -35,26 +35,44 @@ function service(available = { value: [
   gitStatus?: { value: string };
 } = {}) {
   const repository = options.repository ?? new DelegationRepository(new InMemoryDelegationStore());
+  let paneSequence = 0;
+  let tabSequence = 1;
+  const paneLocations = new Map<string, { pane_id: string; tab_id: string; workspace_id: string }>([
+    ["parent", { pane_id: "parent", tab_id: "t1", workspace_id: "w1" }],
+  ]);
   const requestMock = vi.fn(async (method: string, params?: Record<string, unknown>) => {
     if (method === "pane.split") {
-      return { type: "pane_info", pane: { pane_id: "p1", tab_id: "t1", workspace_id: "w1" } };
+      const target = paneLocations.get(String(params?.target_pane_id));
+      const pane = {
+        pane_id: `p${++paneSequence}`,
+        tab_id: target?.tab_id ?? "t1",
+        workspace_id: target?.workspace_id ?? "w1",
+      };
+      paneLocations.set(pane.pane_id, pane);
+      return { type: "pane_info", pane };
     }
     if (method === "agent.start") {
-      return { type: "agent_started", agent: { pane_id: "p1", tab_id: "t1", workspace_id: "w1", agent_status: "idle", interactive_ready: true, agent_session: { agent: "pi", value: "/tmp/session.jsonl" } } };
+      const pane = paneLocations.get(String(params?.pane_id))!;
+      return { type: "agent_started", agent: { ...pane, agent_status: "idle", interactive_ready: true, agent_session: { agent: "pi", value: "/tmp/session.jsonl" } } };
     }
     if (method === "tab.create") {
+      const tabId = `t${++tabSequence}`;
+      const pane = { pane_id: `p${++paneSequence}`, tab_id: tabId, workspace_id: "w1" };
+      paneLocations.set(pane.pane_id, pane);
       return {
         type: "tab_created",
-        tab: { tab_id: "t2", workspace_id: "w1" },
-        root_pane: { pane_id: "p1", tab_id: "t2", workspace_id: "w1" },
+        tab: { tab_id: tabId, workspace_id: "w1" },
+        root_pane: pane,
       };
     }
     if (method === "worktree.create") {
+      const pane = { pane_id: `p${++paneSequence}`, tab_id: "tw1", workspace_id: "ww1" };
+      paneLocations.set(pane.pane_id, pane);
       return {
         type: "worktree_created",
         workspace: { workspace_id: "ww1" },
         tab: { tab_id: "tw1", workspace_id: "ww1" },
-        root_pane: { pane_id: "p1", tab_id: "tw1", workspace_id: "ww1" },
+        root_pane: pane,
         worktree: { path: "/tmp/worktree", branch: params?.branch },
       };
     }
@@ -105,11 +123,40 @@ describe("DelegationService", () => {
     const delegation = await fixture.value.create(request());
     expect(delegation.state).toBe("working");
     expect(delegation.resources.some((resource) => resource.kind === "pane")).toBe(true);
+    expect(delegation.resources).toContainEqual(expect.objectContaining({
+      kind: "tab",
+      id: "t2",
+      shared: true,
+    }));
+    expect(delegation.resources.some((resource) =>
+      resource.kind === "tab" && resource.id === "t1"
+    )).toBe(false);
     expect(fixture.requestMock).toHaveBeenCalledWith(
       "agent.prompt",
       expect.objectContaining({ target: expect.stringMatching(/^task-/) }),
       expect.anything(),
     );
+  });
+
+  it("packs at most three clean-context subagents into each auxiliary tab", async () => {
+    const fixture = service();
+    const delegations = await Promise.all(
+      Array.from({ length: 4 }, (_, index) => fixture.value.create({
+        ...request(),
+        name: `task-${index + 1}`,
+        requiresCleanContext: true,
+      })),
+    );
+
+    const panesByTab = new Map<string, number>();
+    for (const delegation of delegations) {
+      const tab = delegation.resources.find((resource) => resource.kind === "tab")!;
+      expect(tab.id).not.toBe("t1");
+      panesByTab.set(tab.id, (panesByTab.get(tab.id) ?? 0) + 1);
+    }
+    expect([...panesByTab.values()].sort()).toEqual([1, 3]);
+    expect(fixture.requestMock.mock.calls.filter(([method]) => method === "tab.create")).toHaveLength(2);
+    expect(fixture.requestMock.mock.calls.filter(([method]) => method === "pane.split")).toHaveLength(2);
   });
 
   it("requires inspection before parent acceptance", async () => {
@@ -259,6 +306,31 @@ describe("DelegationService", () => {
       expect.objectContaining({ text: expect.stringContaining(`delegation=${third.id}`) }),
       expect.objectContaining({ timeoutMs: 35_000 }),
     );
+  });
+
+  it("does not warm-reuse a legacy pane Session from the coordinator tab", async () => {
+    const fixture = service();
+    const first = await fixture.value.create(request());
+    fixture.repository.save({ ...first, state: "ready_for_review" }, "transition");
+    await fixture.value.inspect(first.id);
+    await fixture.value.manage(first.id, "accept");
+    const session = fixture.repository.getSession(first.sessionId)!;
+    fixture.repository.saveSession({
+      ...session,
+      resources: session.resources
+        .filter((resource) => resource.kind !== "tab")
+        .concat({
+          kind: "tab",
+          id: "t1",
+          createdByExtension: true,
+          ownershipToken: session.callbackToken,
+        }),
+    }, "resource");
+
+    const next = await fixture.value.create({ ...request(), name: "outside-main-tab" });
+
+    expect(next.sessionId).not.toBe(first.sessionId);
+    expect(next.resources.find((resource) => resource.kind === "tab")?.id).not.toBe("t1");
   });
 
   it("requires a new Session for clean context and rejects cleanup while busy", async () => {

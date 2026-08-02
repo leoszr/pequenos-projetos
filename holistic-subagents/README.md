@@ -6,7 +6,9 @@ TypeScript executa delegações persistentes pelo socket do Herdr.
 ## Recursos
 
 - lifecycle e event log persistidos na sessão Pi;
-- pane, tab e worktree sem foco;
+- tab principal sempre livre de subagentes;
+- panes agrupados em tabs auxiliares, com limite de três panes por tab;
+- tab dedicada e worktree sem foco quando a tarefa exige isolamento visual ou de checkout;
 - callbacks autenticados para dúvidas, input obrigatório e handoff;
 - conversa e correção na mesma sessão filha;
 - capacidade semântica e Política de Modelos JSON injetável;
