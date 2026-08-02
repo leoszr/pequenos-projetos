@@ -19,6 +19,10 @@ global. Configuração de projeto só participa quando o projeto é confiável.
 Ambiente auxiliar durável que mantém identidade, contexto conversacional, CWD
 físico, workspace, topologia, recursos, escopo de confiança, teto de autoridade e modelo. Executa
 no máximo uma Delegation Run por vez e pode permanecer aquecida entre missões.
+Mudanças na Agent Session e na sua Run ativa pertencem à mesma ordem; Agent
+Sessions distintas podem progredir em paralelo.
+Cada mudança confirmada avança a Session Mutation Sequence, que identifica a
+versão observada da Agent Session e da sua Run ativa.
 
 ## Delegation Run
 
