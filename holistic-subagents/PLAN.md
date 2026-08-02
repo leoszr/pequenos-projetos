@@ -15,9 +15,9 @@ skill nem o Herdr:
 > A skill decide; a extensão executa e registra; o Herdr hospeda; o agente
 > principal valida.
 
-A unidade de domínio continuará sendo uma delegação dinâmica — missão,
-contexto, autoridade, critérios, ambiente, política de modelo, estado,
-recursos e evidências — e não um catálogo de papéis fixos.
+A unidade de missão é a Delegation Run; processo, contexto, workspace, recursos
+e cleanup pertencem à Agent Session reutilizável. A interface híbrida mantém as
+tools orientadas a Runs e esconde esse kernel em um módulo profundo.
 
 ### Estado atual confirmado
 
@@ -54,8 +54,9 @@ O entrypoint terá dois modos:
 
 ### 2. Modelar lifecycle e persistência como log de eventos
 
-Definir tipos versionados para `Delegation`, `DelegationRequest`, recursos,
-resolução de modelo, evidências e eventos. Usar uma máquina de estados única:
+Definir tipos versionados para Agent Sessions, Delegation Runs, requests,
+recursos, resolução de modelo, evidências e eventos. Runs usam lifecycle
+sem cleanup:
 
 ```text
 prepared → starting → working
@@ -63,8 +64,11 @@ prepared → starting → working
                    ↘ ready_for_review → correcting → working
                                         ↘ accepted
 qualquer estado ativo → failed
-accepted | failed | estado cancelável → closing → closed
+qualquer estado cancelável → cancelled
 ```
+
+`accepted`, `failed` e `cancelled` são terminais da Run. `closing` e `closed`
+pertencem somente ao lifecycle operacional da Agent Session.
 
 `ready_for_review` significa apenas que o executor entregou trabalho e
 evidências. O agente principal escolherá entre revisão direta e uma nova
@@ -189,8 +193,9 @@ virão dos metadados do próprio modelo. O resultado registrará candidato,
 alternativas, tradução de thinking e qualidade/degradação.
 
 A allowlist, providers, modelos e perfis de thinking virão da Política Efetiva
-em JSON. A política padrão usará GPT-5.6 Luna, Terra e Sol; revisão independente
-também exige sessão e contexto limpos.
+em JSON. A política padrão usará GPT-5.6 Luna, Terra e Sol. Revisão independente
+pode reutilizar uma Session reviewer compatível e aquecida. Contexto limpo só é
+exigido com `requiresCleanContext`; compactação não satisfaz esse requisito.
 
 `skills/holistic-subagents/references/model-selection.md` passará a explicar a classificação e será
 validado contra a política. `skills/holistic-subagents/references/model-commands.md` será removido: a

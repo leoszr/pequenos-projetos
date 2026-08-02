@@ -13,6 +13,7 @@ const policy = parseModelPolicy(
   readFileSync(new URL("../../src/models/default-policy.json", import.meta.url), "utf8"),
 );
 const resolveModel = createModelPolicyResolver(policy).resolve;
+const resolveFixed = createModelPolicyResolver(policy).resolveFixed;
 
 const available: AvailableModel[] = [
   { provider: "openai-codex", id: "gpt-5.6-luna", contextWindow: 200_000, input: ["text", "image"] },
@@ -122,6 +123,21 @@ describe("model policy", () => {
     expect(result.effectiveEffort).toBe("low");
     expect(result.thinking).toBe("xhigh");
     expect(result.exactThinking).toBe(false);
+  });
+
+  it("evaluates an eligible fixed model without requiring it to be preferred", () => {
+    expect(resolveModel(
+      { minimumCapability: "scoped", effort: "medium" },
+      available,
+    ).model).toBe("openai-codex/gpt-5.6-luna");
+    expect(resolveFixed(
+      "openai-codex/gpt-5.6-sol",
+      { minimumCapability: "scoped", effort: "medium" },
+      available,
+    )).toMatchObject({
+      model: "openai-codex/gpt-5.6-sol",
+      thinking: "medium",
+    });
   });
 
   it("uses Luna max for scoped volume work", () => {

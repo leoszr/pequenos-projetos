@@ -34,6 +34,12 @@ describe("declarative authority", () => {
         { HOLISTIC_READONLY_SANDBOX: "1" },
       ),
     ).not.toThrow();
+    expect(() =>
+      assertAuthorityPreconditions(
+        { mode: "controlled_mutation", allowedPaths: [], requireExternalSandbox: true },
+        {},
+      ),
+    ).toThrow("external filesystem sandbox");
   });
 
   it("detects read-only side effects without matching tool names", async () => {

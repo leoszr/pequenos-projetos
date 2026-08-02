@@ -51,6 +51,10 @@ export function handleCallbackInput(
   if (!callback) return { matched: false, valid: false };
   const delegation = repository.get(callback.delegationId);
   if (!delegation) return { matched: true, valid: false, reason: "unknown delegation" };
+  const session = repository.getSession(delegation.sessionId);
+  if (!session || session.activeRunId !== delegation.id) {
+    return { matched: true, valid: false, reason: "delegation is not the active Run of its Session" };
+  }
   if (!safeEqual(callback.token, delegation.callbackToken)) {
     return { matched: true, valid: false, reason: "invalid callback token" };
   }
@@ -73,6 +77,8 @@ export function handleCallbackInput(
       updated = {
         ...updated,
         questions: [...updated.questions, question],
+        revision: updated.revision + 1,
+        acceptanceTicket: undefined,
         updatedAt: now,
       };
     }
@@ -91,7 +97,11 @@ export function handleCallbackInput(
   }
 
   if (updated.state === "working") {
-    updated = transitionDelegation(updated, "ready_for_review", now);
+    updated = {
+      ...transitionDelegation(updated, "ready_for_review", now),
+      revision: updated.revision + 1,
+      acceptanceTicket: undefined,
+    };
     repository.save(updated, "transition");
   }
   return {

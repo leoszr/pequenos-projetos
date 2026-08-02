@@ -1,16 +1,15 @@
 import type { Delegation, DelegationState } from "./types.ts";
 
 const transitions: Readonly<Record<DelegationState, readonly DelegationState[]>> = {
-  prepared: ["starting", "failed", "closing"],
-  starting: ["working", "failed", "closing"],
-  working: ["awaiting_input", "ready_for_review", "failed", "closing"],
-  awaiting_input: ["working", "failed", "closing"],
-  ready_for_review: ["correcting", "accepted", "failed", "closing"],
-  correcting: ["working", "failed", "closing"],
-  accepted: ["closing"],
-  failed: ["closing"],
-  closing: ["closed", "failed"],
-  closed: [],
+  prepared: ["starting", "failed", "cancelled"],
+  starting: ["working", "failed", "cancelled"],
+  working: ["awaiting_input", "ready_for_review", "failed", "cancelled"],
+  awaiting_input: ["working", "failed", "cancelled"],
+  ready_for_review: ["correcting", "accepted", "failed", "cancelled"],
+  correcting: ["working", "failed", "cancelled"],
+  accepted: [],
+  failed: [],
+  cancelled: [],
 };
 
 export class InvalidDelegationTransition extends Error {
@@ -37,5 +36,5 @@ export function transitionDelegation(
 }
 
 export function isActiveState(state: DelegationState): boolean {
-  return !["accepted", "failed", "closed"].includes(state);
+  return !["accepted", "failed", "cancelled"].includes(state);
 }

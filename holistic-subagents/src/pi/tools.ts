@@ -50,6 +50,9 @@ export function registerHolisticTools(
       })),
       baseRef: Type.Optional(Type.String()),
       branch: Type.Optional(Type.String()),
+      requiresCleanContext: Type.Optional(Type.Boolean({
+        description: "Always launch a new Agent Session. Compaction does not satisfy this requirement.",
+      })),
     }, { additionalProperties: false }),
     async execute(_id, params, signal) {
       if (!canCreate()) {
@@ -67,6 +70,7 @@ export function registerHolisticTools(
         reviewOf: params.reviewOf,
         baseRef: params.baseRef,
         branch: params.branch,
+        requiresCleanContext: params.requiresCleanContext,
         model: {
           minimumCapability: params.minimumCapability as Capability,
           effort: params.effort === "auto" ? undefined : params.effort as ThinkingLevel,

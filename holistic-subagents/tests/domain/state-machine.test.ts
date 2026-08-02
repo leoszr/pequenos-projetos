@@ -8,14 +8,21 @@ import type { Delegation } from "../../src/domain/types.ts";
 
 function fixture(state: Delegation["state"] = "prepared"): Delegation {
   return {
-    version: 1,
+    version: 2,
     id: "d1",
+    sessionId: "as1",
     parentSessionId: "s1",
     parentPaneId: "p1",
     callbackToken: "secret",
     state,
     purpose: "execution",
     reviewerIds: [],
+    modelResolution: {
+      model: "p/m", provider: "p", family: "f", thinking: "low",
+      requestedCapability: "bounded", providedCapability: "bounded",
+      degradedCapability: false, exactThinking: true, alternatives: [], reason: "test",
+      requestedEffort: "low", effectiveEffort: "low", purpose: "execution",
+    },
     request: {
       name: "test",
       mission: "Do the thing",
@@ -28,6 +35,7 @@ function fixture(state: Delegation["state"] = "prepared"): Delegation {
     resources: [],
     questions: [],
     evidence: [],
+    revision: 0,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   };
@@ -46,12 +54,10 @@ describe("delegation state machine", () => {
       "working",
       "ready_for_review",
       "accepted",
-      "closing",
-      "closed",
     ] as const) {
       value = transitionDelegation(value, state);
     }
-    expect(value.state).toBe("closed");
+    expect(value.state).toBe("accepted");
   });
 
   it("treats repeated transitions as idempotent", () => {

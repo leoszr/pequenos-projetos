@@ -112,10 +112,12 @@ baseline with an unsupported self-report.
 
 You may review directly or create a verification delegation with
 `purpose=verification` and `reviewOf=<original-id>`. Give the reviewer a stable
-commit/diff, fresh context, an adversarial brief, objective criteria and
+commit/diff, an adversarial brief, objective criteria and
 read-only authority. The effective policy decides the verification model; the
 packaged default routes it to GPT-5.6 Sol at `medium`. Model choice never
-replaces clean context and objective criteria. The reviewer reports findings;
+replaces objective criteria. A compatible warm reviewer Session is allowed by
+default; set `requiresCleanContext=true` only when prior context is a material
+bias risk. Compaction is not clean context. The reviewer reports findings;
 only you accept the original.
 
 `reviewOf` also infers `purpose=verification` when purpose is omitted. An

@@ -5,14 +5,21 @@ import { DelegationCleanup, CleanupBlockedError } from "../../src/security/clean
 
 function delegation(): Delegation {
   return {
-    version: 1,
+    version: 2,
     id: "d1",
+    sessionId: "as1",
     parentSessionId: "s1",
     parentPaneId: "parent",
     callbackToken: "token",
-    state: "closing",
+    state: "accepted",
     purpose: "execution",
     reviewerIds: [],
+    modelResolution: {
+      model: "p/m", provider: "p", family: "f", thinking: "medium",
+      requestedCapability: "scoped", providedCapability: "scoped",
+      degradedCapability: false, exactThinking: true, alternatives: [], reason: "test",
+      requestedEffort: "medium", effectiveEffort: "medium", purpose: "execution",
+    },
     request: {
       name: "task",
       mission: "mission",
@@ -30,6 +37,7 @@ function delegation(): Delegation {
     ],
     questions: [],
     evidence: [],
+    revision: 0,
     createdAt: "now",
     updatedAt: "now",
   };

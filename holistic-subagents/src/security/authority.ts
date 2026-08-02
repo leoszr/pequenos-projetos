@@ -30,7 +30,7 @@ export function assertAuthorityPreconditions(
   authority: AuthorityPolicy,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  if (authority.mode === "read_only" && authority.requireExternalSandbox) {
+  if (authority.requireExternalSandbox) {
     if (env.HOLISTIC_READONLY_SANDBOX !== "1") {
       throw new Error("read_only delegation requires an external filesystem sandbox");
     }

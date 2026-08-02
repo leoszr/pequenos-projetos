@@ -14,6 +14,8 @@ TypeScript executa delegações persistentes pelo socket do Herdr.
   `low|medium` para alta agência e verification;
 - auditoria declarativa de autoridade e cleanup por ownership;
 - cinco tools `holistic_*`, dashboard `/holistic` e modo de delegação opt-in.
+- Agent Sessions reutilizáveis separadas de Delegation Runs limitadas; reviewer
+  warm por padrão e `requiresCleanContext` explícito para contexto limpo.
 
 ## Requisitos
 
@@ -39,10 +41,26 @@ pi --extension ./extensions/holistic-subagents.ts \
 
 ## Instalação
 
-Local, mantendo vínculo com o checkout:
+Instale a versão publicada no GitHub:
 
 ```bash
-pi install .
+pi install git:github.com/leoszr/holistic-subagents
+```
+
+O Pi usa um clone isolado em `~/.pi/agent/git/`. Alterações no checkout local
+não afetam a extensão instalada. Depois de publicar mudanças no GitHub, atualize
+explicitamente e recarregue:
+
+```bash
+pi update --extension git:github.com/leoszr/holistic-subagents
+# dentro do Pi
+/reload
+```
+
+Para desenvolvimento local sem substituir a instalação persistente:
+
+```bash
+pi -e .
 ```
 
 Se uma cópia antiga da skill existir em `~/.pi/agent/skills/holistic-subagents`
@@ -50,8 +68,8 @@ ou `~/.agents/skills/holistic-subagents`, mova-a para fora do diretório de
 skills. Manter as duas origens causa colisão e pode carregar a documentação
 antiga no lugar da skill do pacote.
 
-Também é possível instalar a origem Git/NPM quando publicada. Abra uma nova
-sessão Pi após instalar e confirme `pi list` e `herdr integration status`.
+Abra uma nova sessão Pi após instalar e confirme `pi list` e
+`herdr integration status`.
 
 ## Política de modelos
 

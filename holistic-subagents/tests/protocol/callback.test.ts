@@ -7,14 +7,21 @@ import { handleCallbackInput } from "../../src/protocol/callback.ts";
 
 function fixture(): Delegation {
   return {
-    version: 1,
+    version: 2,
     id: "d1",
+    sessionId: "as1",
     parentSessionId: "s1",
     parentPaneId: "parent",
     callbackToken: "secret-token",
     state: "working",
     purpose: "execution",
     reviewerIds: [],
+    modelResolution: {
+      model: "p/m", provider: "p", family: "f", thinking: "medium",
+      requestedCapability: "scoped", providedCapability: "scoped",
+      degradedCapability: false, exactThinking: true, alternatives: [], reason: "test",
+      requestedEffort: "medium", effectiveEffort: "medium", purpose: "execution",
+    },
     request: {
       name: "task",
       mission: "Investigate",
@@ -27,6 +34,7 @@ function fixture(): Delegation {
     resources: [{ kind: "pane", id: "p1", createdByExtension: true, ownershipToken: "owner" }],
     questions: [],
     evidence: [],
+    revision: 0,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   };
@@ -34,7 +42,27 @@ function fixture(): Delegation {
 
 function repository() {
   const repo = new DelegationRepository(new InMemoryDelegationStore());
-  repo.save(fixture(), "created");
+  const run = fixture();
+  repo.saveSession({
+    version: 2,
+    id: run.sessionId,
+    ownershipId: run.sessionId,
+    parentSessionId: run.parentSessionId,
+    parentPaneId: run.parentPaneId,
+    state: "busy",
+    activeRunId: run.id,
+    trustScope: "/repo",
+    authorityCeiling: run.request.authority,
+    modelResolution: run.modelResolution,
+    topology: run.request.topology,
+    cwd: run.request.cwd,
+    resources: run.resources,
+    callbackToken: run.callbackToken,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    lastUsedAt: run.updatedAt,
+  }, "created");
+  repo.save(run, "created");
   return repo;
 }
 

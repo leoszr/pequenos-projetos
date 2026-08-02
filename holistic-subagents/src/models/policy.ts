@@ -54,6 +54,11 @@ export interface LoadedModelPolicy {
 
 export interface ModelPolicyResolver {
   resolve(request: ModelRequest, available: readonly AvailableModel[]): ModelResolution;
+  resolveFixed(
+    modelId: string,
+    request: ModelRequest,
+    available: readonly AvailableModel[],
+  ): ModelResolution | undefined;
 }
 
 export class ModelPolicyError extends Error {
@@ -220,6 +225,43 @@ export function createModelPolicyResolver(input: ModelPolicy): ModelPolicyResolv
   return {
     resolve(request, available) {
       return resolveWithPolicy(policy, request, available);
+    },
+    resolveFixed(modelId, request, available) {
+      const candidate = policy.models.find((model) => model.id === modelId);
+      const runtime = available.find((model) => `${model.provider}/${model.id}` === modelId);
+      const purpose = request.purpose ?? "execution";
+      if (!candidate || !runtime || !candidate.purposes.includes(purpose)) return undefined;
+      const effort = request.effort
+        ?? policy.purposeDefaultEffort[purpose]
+        ?? policy.defaultEffort[request.minimumCapability];
+      const thinking = candidate.thinkingMap[effort];
+      if (!policy.efforts.includes(effort) || !thinking) return undefined;
+      const requirements = request.requirements;
+      if (requirements?.minContextWindow && runtime.contextWindow < requirements.minContextWindow) return undefined;
+      if (requirements?.modalities?.some((item) => !runtime.input.includes(item))) return undefined;
+      if (requirements?.tools?.some((item) => !candidate.tools.includes(item))) return undefined;
+      if (requirements?.harness?.some((item) => !candidate.harness.includes(item))) return undefined;
+      if (requirements?.maxCostRank && candidate.costRank > requirements.maxCostRank) return undefined;
+      if (requirements?.maxLatencyRank && candidate.latencyRank > requirements.maxLatencyRank) return undefined;
+      if (request.independence?.required && request.independence.avoidFamily === candidate.family) return undefined;
+      const requestedRank = CAPABILITIES.indexOf(request.minimumCapability);
+      const providedRank = CAPABILITIES.indexOf(candidate.capability);
+      if (!request.allowDegraded && providedRank < requestedRank) return undefined;
+      return {
+        model: candidate.id,
+        provider: candidate.id.split("/", 1)[0]!,
+        family: candidate.family,
+        thinking,
+        requestedCapability: request.minimumCapability,
+        providedCapability: candidate.capability,
+        degradedCapability: providedRank < requestedRank,
+        exactThinking: thinking === effort,
+        alternatives: [],
+        reason: `Fixed Session model remains eligible; thinking ${effort} -> ${thinking}`,
+        requestedEffort: request.effort ?? "auto",
+        effectiveEffort: effort,
+        purpose,
+      };
     },
   };
 }

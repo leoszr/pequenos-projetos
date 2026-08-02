@@ -14,7 +14,10 @@ export function reconcileSnapshot(
   now = new Date().toISOString(),
 ): ReconciliationResult {
   const panes = new Map((snapshot.panes ?? []).map((pane) => [pane.pane_id, pane]));
-  const knownDelegationIds = new Set(repository.list().map((delegation) => delegation.id));
+  const knownDelegationIds = new Set([
+    ...repository.list().map((delegation) => delegation.id),
+    ...repository.listSessions().map((session) => session.ownershipId),
+  ]);
   const updated: Delegation[] = [];
 
   for (const delegation of repository.list()) {
@@ -32,9 +35,17 @@ export function reconcileSnapshot(
         next = { ...next, failure: "Herdr ownership metadata diverged", health: "ownership_mismatch" };
       } else {
         next = { ...next, health: pane.agent_status, updatedAt: now };
+        if (delegation.sessionId) {
+          const session = repository.getSession(delegation.sessionId);
+          if (session) repository.saveSession({ ...session, health: pane.agent_status, updatedAt: now }, "health");
+        }
       }
     }
     repository.save(next, next.state === "failed" ? "transition" : "health");
+    if (next.state === "failed" && delegation.sessionId) {
+      const session = repository.getSession(delegation.sessionId);
+      if (session) repository.saveSession({ ...session, state: "failed", activeRunId: undefined, failure: next.failure, health: next.health, updatedAt: now }, "transition");
+    }
     updated.push(next);
   }
 
@@ -52,9 +63,11 @@ export function applyInfrastructureEvent(
   const data = (event.data ?? event) as Record<string, unknown>;
   const paneId = typeof data.pane_id === "string" ? data.pane_id : undefined;
   if (!paneId) return undefined;
-  const delegation = repository.list().find((candidate) =>
+  const session = repository.listSessions().find((candidate) =>
     candidate.resources.some((resource) => resource.kind === "pane" && resource.id === paneId),
   );
+  if (!session?.activeRunId) return undefined;
+  const delegation = repository.get(session.activeRunId);
   if (!delegation) return undefined;
 
   const kind = String(data.type ?? event.event);
@@ -65,12 +78,14 @@ export function applyInfrastructureEvent(
       health: "exited",
     };
     repository.save(failed, "transition");
+    repository.saveSession({ ...session, state: "failed", failure: failed.failure, health: "exited", activeRunId: undefined, updatedAt: now }, "transition");
     return failed;
   }
   const status = typeof data.agent_status === "string" ? data.agent_status : undefined;
   if (status) {
     const updated = { ...delegation, health: status, updatedAt: now };
     repository.save(updated, "health");
+    repository.saveSession({ ...session, health: status, updatedAt: now }, "health");
     return updated;
   }
   return undefined;

@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { relative, join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { applyInfrastructureEvent, reconcileSnapshot } from "../herdr/reconcile.ts";
 import type { HerdrClient, HerdrSnapshot, HerdrSubscriptionEvent } from "../herdr/client.ts";
@@ -19,10 +19,11 @@ import {
   type CommandRunner,
 } from "../security/authority.ts";
 import { DelegationCleanup } from "../security/cleanup.ts";
-import { transitionDelegation } from "./state-machine.ts";
+import { isActiveState, transitionDelegation } from "./state-machine.ts";
 import { DelegationRepository } from "./store.ts";
 import {
   STORE_VERSION,
+  type AgentSession,
   type Delegation,
   type DelegationRequest,
   type DelegationResource,
@@ -86,42 +87,105 @@ export class DelegationService {
     const normalizedRequest = normalizeDelegationRequest(request);
     validateDelegationRequest(normalizedRequest);
     assertAuthorityPreconditions(normalizedRequest.authority);
+    const reviewedOriginal = normalizedRequest.reviewOf
+      ? this.get(normalizedRequest.reviewOf)
+      : undefined;
+    const trustBaseline = await captureAuthorityBaseline(
+      this.#runner,
+      normalizedRequest.cwd,
+    );
+    const trustScope = resolve(trustBaseline.gitRoot ?? normalizedRequest.cwd);
     const resolution = this.#modelPolicy.resolve(
       { ...normalizedRequest.model, purpose: normalizedRequest.purpose },
       this.#availableModels(),
     );
     const now = new Date().toISOString();
-    let delegation: Delegation = {
+    const runId = randomUUID();
+    const compatible = normalizedRequest.requiresCleanContext ? undefined : this.#repository.listSessions()
+      .filter((session) => !session.sealed
+        && ["idle", "busy", "starting"].includes(session.state)
+        && sessionEnvironmentCompatible(session, normalizedRequest, trustScope)
+        && authorityContained(
+          normalizedRequest.authority,
+          session.authorityCeiling,
+          normalizedRequest.cwd,
+          session.cwd,
+        )
+        && this.#fixedModelEligible(session, normalizedRequest))
+      .sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt))[0];
+    if (compatible && compatible.state !== "idle") throw sessionBusy();
+    let session: AgentSession = compatible ?? {
       version: STORE_VERSION,
       id: randomUUID(),
+      ownershipId: "",
       parentSessionId: this.#identity.parentSessionId,
       parentPaneId: this.#identity.parentPaneId,
       callbackToken: randomBytes(24).toString("base64url"),
+      state: "starting",
+      trustScope,
+      authorityCeiling: structuredClone(normalizedRequest.authority),
+      modelResolution: resolution,
+      topology: normalizedRequest.topology,
+      cwd: normalizedRequest.cwd,
+      resources: [],
+      createdAt: now,
+      updatedAt: now,
+      lastUsedAt: now,
+    };
+    if (!compatible) session = { ...session, ownershipId: session.id };
+    // Reservation is synchronous: concurrent callers see busy and never queue or preempt.
+    if (compatible) {
+      const current = this.#repository.getSession(compatible.id);
+      if (!current || current.state !== "idle") throw sessionBusy();
+      session = {
+        ...current,
+        state: "busy",
+        activeRunId: runId,
+        updatedAt: now,
+        lastUsedAt: now,
+      };
+    }
+    this.#repository.saveSession(session, compatible ? "transition" : "created");
+    let delegation: Delegation = {
+      version: STORE_VERSION,
+      id: runId,
+      parentSessionId: this.#identity.parentSessionId,
+      parentPaneId: this.#identity.parentPaneId,
+      sessionId: session.id,
+      callbackToken: session.callbackToken,
       state: "prepared",
       request: structuredClone(normalizedRequest),
       purpose: normalizedRequest.purpose,
       reviewOf: normalizedRequest.reviewOf,
       reviewerIds: [],
-      modelResolution: resolution,
+      modelResolution: session.modelResolution,
       resources: [],
       questions: [],
       evidence: [],
+      runtimeCwd: normalizedRequest.cwd,
+      revision: 0,
       createdAt: now,
       updatedAt: now,
     };
-    delegation.authorityBaseline = await captureAuthorityBaseline(
-      this.#runner,
-      normalizedRequest.cwd,
-      now,
-    );
+    delegation.authorityBaseline = { ...trustBaseline, capturedAt: now };
     this.#repository.save(delegation, "created");
+    session = {
+      ...session,
+      state: "busy",
+      activeRunId: delegation.id,
+      authorityBaseline: delegation.authorityBaseline,
+      updatedAt: now,
+      lastUsedAt: now,
+    };
+    this.#repository.saveSession(session, "transition");
 
-    if (normalizedRequest.reviewOf) {
-      const original = this.get(normalizedRequest.reviewOf);
+    if (reviewedOriginal) {
       this.#repository.save(
         {
-          ...original,
-          reviewerIds: [...new Set([...original.reviewerIds, delegation.id])],
+          ...reviewedOriginal,
+          reviewerIds: [...new Set([...reviewedOriginal.reviewerIds, delegation.id])],
+          revision: reviewedOriginal.revision + 1,
+          acceptanceTicket: undefined,
           updatedAt: now,
         },
         "relation",
@@ -131,9 +195,25 @@ export class DelegationService {
     delegation = transitionDelegation(delegation, "starting");
     this.#repository.save(delegation, "transition");
     try {
+      if (compatible) {
+        await this.#herdr.request("agent.prompt", {
+          target: primarySessionPaneId(session),
+          text: buildDelegationBrief({
+            ...delegation,
+            runtimeCwd: normalizedRequest.cwd,
+            request: { ...delegation.request, cwd: normalizedRequest.cwd },
+          }),
+        }, { signal });
+        delegation = {
+          ...transitionDelegation(delegation, "working"),
+          health: "working",
+        };
+        this.#repository.save(delegation, "transition");
+        return delegation;
+      }
       const launch = await this.#topologies.launch(
         {
-          delegationId: delegation.id,
+          delegationId: session.id,
           parentSessionId: delegation.parentSessionId,
           ownershipToken: ownershipToken(delegation),
           name: normalizedRequest.name,
@@ -163,13 +243,12 @@ export class DelegationService {
                     relative(delegation.authorityBaseline.gitRoot, normalizedRequest.cwd),
                   )
                 : resource.path;
-              delegation = {
-                ...delegation,
-                authorityBaseline: await captureAuthorityBaseline(this.#runner, auditCwd),
-              };
+              const baseline = await captureAuthorityBaseline(this.#runner, auditCwd);
+              session = { ...session, authorityBaseline: baseline };
+              delegation = { ...delegation, authorityBaseline: baseline };
             }
-            delegation = upsertResource(delegation, resource);
-            this.#repository.save(delegation, "resource");
+            session = upsertSessionResource(session, resource);
+            this.#repository.saveSession(session, "resource");
           },
         },
         signal,
@@ -179,13 +258,30 @@ export class DelegationService {
         health: "working",
         runtimeCwd: launch.cwd,
       };
+      session = {
+        ...session,
+        state: "busy",
+        cwd: launch.cwd,
+        runtimeCwd: launch.cwd,
+        health: "working",
+        updatedAt: new Date().toISOString(),
+      };
+      this.#repository.saveSession(session, "transition");
       this.#repository.save(delegation, "transition");
-      return delegation;
+      return this.get(delegation.id);
     } catch (error) {
       delegation = {
         ...transitionDelegation(delegation, "failed"),
         failure: error instanceof Error ? error.message : String(error),
       };
+      session = {
+        ...session,
+        state: "failed",
+        failure: delegation.failure,
+        activeRunId: undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      this.#repository.saveSession(session, "transition");
       this.#repository.save(delegation, "transition");
       throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
         delegationId: delegation.id,
@@ -223,6 +319,11 @@ export class DelegationService {
       delegation = {
         ...delegation,
         evidence: [...delegation.evidence, { ...audit.evidence, paneOutput }],
+        acceptanceTicket: audit.ok ? {
+          token: randomBytes(18).toString("base64url"),
+          revision: delegation.revision,
+          inspectedAt: new Date().toISOString(),
+        } : undefined,
         health: audit.ok ? delegation.health : "authority_violation",
         updatedAt: new Date().toISOString(),
       };
@@ -240,6 +341,9 @@ export class DelegationService {
     return this.#serialized(id, async () => {
       let delegation = this.get(id);
       if (!message.trim()) throw new Error("Message cannot be empty");
+      if (["accepted", "failed", "cancelled"].includes(delegation.state)) {
+        throw new Error(`RUN_TERMINAL: Run ${id} is ${delegation.state}; use holistic_create for a new mission`);
+      }
       if (options.correction && delegation.state === "ready_for_review") {
         delegation = transitionDelegation(delegation, "correcting");
         this.#repository.save(delegation, "transition");
@@ -255,7 +359,13 @@ export class DelegationService {
           ? { ...question, answer: message, answeredAt: now }
           : question,
       );
-      delegation = { ...delegation, questions, updatedAt: now };
+      delegation = {
+        ...delegation,
+        questions,
+        revision: delegation.revision + 1,
+        acceptanceTicket: undefined,
+        updatedAt: now,
+      };
       if (delegation.state === "awaiting_input" || delegation.state === "correcting") {
         delegation = transitionDelegation(delegation, "working", now);
       }
@@ -276,37 +386,101 @@ export class DelegationService {
         return delegation;
       }
       if (action === "accept") {
-        if (!delegation.evidence.length) throw new Error("Inspect evidence before accepting");
+        if (!delegation.acceptanceTicket
+          || delegation.acceptanceTicket.revision !== delegation.revision) {
+          throw new Error(
+            "STALE_INSPECTION: Inspect evidence for the current Run before accepting",
+          );
+        }
         for (const reviewerId of delegation.reviewerIds) {
           if (this.get(reviewerId).state !== "accepted") {
             throw new Error(`Reviewer delegation ${reviewerId} has not been accepted by the parent`);
           }
         }
-        delegation = transitionDelegation(delegation, "accepted");
+        delegation = {
+          ...transitionDelegation(delegation, "accepted"),
+          health: undefined,
+          failure: undefined,
+        };
         this.#repository.save(delegation, "transition");
+        this.#releaseSession(delegation);
         return delegation;
       }
       if (action === "fail") {
         delegation = {
           ...transitionDelegation(delegation, "failed"),
           failure: options.reason ?? "marked failed by parent",
+          health: "failed",
         };
         this.#repository.save(delegation, "transition");
+        const session = this.#repository.getSession(delegation.sessionId);
+        if (session?.activeRunId === delegation.id) {
+          this.#repository.saveSession({
+            ...session,
+            state: "failed",
+            activeRunId: undefined,
+            failure: delegation.failure,
+            health: "failed",
+            updatedAt: new Date().toISOString(),
+          }, "transition");
+        }
         return delegation;
       }
-      if (delegation.state !== "closing") {
-        delegation = transitionDelegation(delegation, "closing");
+      let session = this.#repository.getSession(delegation.sessionId)!;
+      if (session.state === "busy") {
+        if (action === "cleanup") throw sessionBusy();
+        if (session.activeRunId !== delegation.id || !isActiveState(delegation.state)) {
+          throw sessionBusy();
+        }
+        const now = new Date().toISOString();
+        delegation = {
+          ...transitionDelegation(delegation, "cancelled", now),
+          failure: options.reason ?? "cancelled by parent for Session close",
+          health: "failed",
+        };
         this.#repository.save(delegation, "transition");
+        session = {
+          ...session,
+          state: "failed",
+          activeRunId: undefined,
+          failure: delegation.failure,
+          health: "failed",
+          updatedAt: now,
+        };
+        this.#repository.saveSession(session, "transition");
       }
-      await this.#cleanup.cleanup(delegation, {
-        discardBranch: options.discardBranch,
-        onResource: (resource) => {
-          delegation = upsertResource(delegation, resource);
-          this.#repository.save(delegation, "resource");
-        },
-      });
-      delegation = { ...transitionDelegation(delegation, "closed"), health: undefined };
-      this.#repository.save(delegation, "transition");
+      const closing = {
+        ...session,
+        state: "closing" as const,
+        updatedAt: new Date().toISOString(),
+      };
+      this.#repository.saveSession(closing, "transition");
+      try {
+        await this.#cleanup.cleanup(sessionCleanupProjection(delegation, closing), {
+          discardBranch: options.discardBranch,
+          onResource: (resource) => {
+            const current = this.#repository.getSession(session.id)!;
+            this.#repository.saveSession(upsertSessionResource(current, resource), "resource");
+          },
+        });
+      } catch (error) {
+        const current = this.#repository.getSession(session.id)!;
+        this.#repository.saveSession({
+          ...current,
+          state: "failed",
+          health: "failed",
+          failure: error instanceof Error ? error.message : String(error),
+          updatedAt: new Date().toISOString(),
+        }, "transition");
+        throw error;
+      }
+      const current = this.#repository.getSession(session.id)!;
+      this.#repository.saveSession({
+        ...current,
+        state: "closed",
+        health: undefined,
+        updatedAt: new Date().toISOString(),
+      }, "transition");
       return delegation;
     });
   }
@@ -331,10 +505,38 @@ export class DelegationService {
       if (this.#queues.get(id) === current) this.#queues.delete(id);
     });
   }
+
+  #releaseSession(run: Delegation): void {
+    const session = this.#repository.getSession(run.sessionId);
+    if (!session || session.activeRunId !== run.id) return;
+    const now = new Date().toISOString();
+    this.#repository.saveSession({
+      ...session,
+      state: "idle",
+      activeRunId: undefined,
+      health: "idle",
+      failure: undefined,
+      updatedAt: now,
+      lastUsedAt: now,
+    }, "transition");
+  }
+
+  #fixedModelEligible(
+    session: AgentSession,
+    request: DelegationRequest,
+  ): boolean {
+    const fixed = this.#modelPolicy.resolveFixed(
+      session.modelResolution.model,
+      { ...request.model, purpose: request.purpose },
+      this.#availableModels(),
+    );
+    return fixed?.thinking === session.modelResolution.thinking
+      && fixed.model === session.modelResolution.model;
+  }
 }
 
 function buildPiArgv(delegation: Delegation): string[] {
-  const resolution = delegation.modelResolution!;
+  const resolution = delegation.modelResolution;
   return [
     "pi",
     "--model",
@@ -365,14 +567,85 @@ function ownershipToken(delegation: Delegation): string {
   return delegation.callbackToken;
 }
 
-function upsertResource(delegation: Delegation, resource: DelegationResource): Delegation {
-  const index = delegation.resources.findIndex(
-    (item) => item.kind === resource.kind && item.id === resource.id,
+function upsertSessionResource(session: AgentSession, resource: DelegationResource): AgentSession {
+  const resources = [...session.resources];
+  const index = resources.findIndex((item) => item.kind === resource.kind && item.id === resource.id);
+  if (index < 0) resources.push(resource);
+  else resources[index] = resource;
+  return { ...session, resources, updatedAt: new Date().toISOString() };
+}
+
+function primarySessionPaneId(session: AgentSession): string {
+  const pane = session.resources.filter((resource) => resource.kind === "pane").at(-1);
+  if (!pane) throw new Error(`Agent Session ${session.id} has no pane`);
+  return pane.id;
+}
+
+function sessionCleanupProjection(run: Delegation, session: AgentSession): Delegation {
+  return {
+    ...run,
+    id: session.ownershipId,
+    resources: session.resources,
+    request: { ...run.request, cwd: session.cwd },
+    runtimeCwd: session.runtimeCwd,
+  };
+}
+
+function sessionBusy(): Error & { code: string } {
+  return Object.assign(
+    new Error(
+      "SESSION_BUSY: Agent Session has an active Run; no queue or preemption is performed",
+    ),
+    { code: "SESSION_BUSY" },
   );
-  const resources = [...delegation.resources];
-  if (index >= 0) resources[index] = resource;
-  else resources.push(resource);
-  return { ...delegation, resources, updatedAt: new Date().toISOString() };
+}
+
+export function authorityContained(
+  run: DelegationRequest["authority"],
+  ceiling: DelegationRequest["authority"],
+  runCwd: string,
+  ceilingCwd: string,
+): boolean {
+  if (run.mode !== "read_only" && run.mode !== ceiling.mode) return false;
+  if (run.requireExternalSandbox && !ceiling.requireExternalSandbox) return false;
+
+  const runForbidden = canonicalPaths(run.forbiddenPaths ?? [], runCwd);
+  const ceilingForbidden = canonicalPaths(ceiling.forbiddenPaths ?? [], ceilingCwd);
+  if (ceilingForbidden.some((blocked) =>
+    !runForbidden.some((runBlocked) => pathContains(runBlocked, blocked)))) {
+    return false;
+  }
+
+  if (run.mode === "read_only") return true;
+  const runAllowed = canonicalPaths(run.allowedPaths, runCwd);
+  const ceilingAllowed = canonicalPaths(ceiling.allowedPaths, ceilingCwd);
+  if (ceilingAllowed.length > 0 && runAllowed.length === 0) return false;
+  if (ceilingAllowed.length > 0 && runAllowed.some((path) =>
+    !ceilingAllowed.some((parent) => pathContains(parent, path)))) {
+    return false;
+  }
+  return true;
+}
+
+export function sessionEnvironmentCompatible(
+  session: AgentSession,
+  request: DelegationRequest,
+  trustScope: string,
+): boolean {
+  if (resolve(session.trustScope) !== resolve(trustScope)) return false;
+  if (resolve(session.cwd) !== resolve(request.cwd)) return false;
+  if (session.topology !== request.topology) return false;
+  return session.topology !== "worktree";
+}
+
+function canonicalPaths(paths: readonly string[], cwd: string): string[] {
+  return paths.map((path) => resolve(isAbsolute(path) ? path : join(cwd, path)));
+}
+
+function pathContains(parent: string, child: string): boolean {
+  const delta = relative(parent, child);
+  return delta === ""
+    || (delta !== ".." && !delta.startsWith(`..${sep}`) && !isAbsolute(delta));
 }
 
 function primaryPaneId(delegation: Delegation): string {

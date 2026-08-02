@@ -1,7 +1,8 @@
-export const STORE_VERSION = 1 as const;
-export const STORE_CUSTOM_TYPE = "holistic-delegation-v1";
+export const STORE_VERSION = 2 as const;
+export const STORE_CUSTOM_TYPE = "holistic-delegation-v2";
+export const LEGACY_STORE_CUSTOM_TYPE = "holistic-delegation-v1";
 
-export type DelegationState =
+export type RunState =
   | "prepared"
   | "starting"
   | "working"
@@ -10,11 +11,18 @@ export type DelegationState =
   | "correcting"
   | "accepted"
   | "failed"
+  | "cancelled";
+export type DelegationState = RunState;
+export type AgentSessionState =
+  | "starting"
+  | "idle"
+  | "busy"
   | "closing"
-  | "closed";
+  | "closed"
+  | "failed";
 
 export const DELEGATION_PURPOSES = ["execution", "verification"] as const;
-export type DelegationPurpose = typeof DELEGATION_PURPOSES[number];
+export type DelegationPurpose = (typeof DELEGATION_PURPOSES)[number];
 export type DelegationTopology = "pane" | "tab" | "worktree";
 export type AuthorityMode =
   | "read_only"
@@ -26,7 +34,7 @@ export const CAPABILITIES = [
   "cross_cutting",
   "high_agency",
 ] as const;
-export type Capability = typeof CAPABILITIES[number];
+export type Capability = (typeof CAPABILITIES)[number];
 export const PI_THINKING_LEVELS = [
   "off",
   "minimal",
@@ -36,7 +44,7 @@ export const PI_THINKING_LEVELS = [
   "xhigh",
   "max",
 ] as const;
-export type ThinkingLevel = typeof PI_THINKING_LEVELS[number];
+export type ThinkingLevel = (typeof PI_THINKING_LEVELS)[number];
 
 export interface AuthorityPolicy {
   mode: AuthorityMode;
@@ -97,6 +105,7 @@ export interface DelegationRequest {
   reviewOf?: string;
   baseRef?: string;
   branch?: string;
+  requiresCleanContext?: boolean;
 }
 
 export type ResourceKind =
@@ -143,28 +152,66 @@ export interface AuthorityBaseline {
   statusLines: string[];
 }
 
-export interface Delegation {
+export interface AcceptanceTicket {
+  token: string;
+  revision: number;
+  inspectedAt: string;
+}
+
+export interface AgentSession {
   version: typeof STORE_VERSION;
   id: string;
+  /** Identity written into Herdr ownership metadata. */
+  ownershipId: string;
+  parentSessionId: string;
+  parentPaneId: string;
+  state: AgentSessionState;
+  activeRunId?: string;
+  /** Migrated v1 Sessions are inspectable/cleanable but never reusable. */
+  sealed?: boolean;
+  trustScope: string;
+  authorityCeiling: AuthorityPolicy;
+  modelResolution: ModelResolution;
+  topology: DelegationTopology;
+  cwd: string;
+  runtimeCwd?: string;
+  resources: DelegationResource[];
+  authorityBaseline?: AuthorityBaseline;
+  callbackToken: string;
+  health?: string;
+  failure?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string;
+}
+
+export interface DelegationRun {
+  version: typeof STORE_VERSION;
+  id: string;
+  sessionId: string;
   parentSessionId: string;
   parentPaneId: string;
   callbackToken: string;
-  state: DelegationState;
+  state: RunState;
   request: DelegationRequest;
   purpose: DelegationPurpose;
   reviewOf?: string;
   reviewerIds: string[];
-  modelResolution?: ModelResolution;
-  resources: DelegationResource[];
+  modelResolution: ModelResolution;
   questions: DelegationQuestion[];
   evidence: DelegationEvidence[];
   authorityBaseline?: AuthorityBaseline;
   runtimeCwd?: string;
   health?: string;
   failure?: string;
+  revision: number;
+  acceptanceTicket?: AcceptanceTicket;
   createdAt: string;
   updatedAt: string;
+  /** Compatibility projection; ownership remains on AgentSession. */
+  resources: DelegationResource[];
 }
+export type Delegation = DelegationRun;
 
 export type DelegationEventKind =
   | "created"
@@ -176,14 +223,28 @@ export type DelegationEventKind =
   | "relation"
   | "health";
 
-export interface DelegationStoreRecord {
+export interface RunStoreRecord {
   version: typeof STORE_VERSION;
   eventId: string;
-  delegationId: string;
   kind: DelegationEventKind;
   at: string;
-  snapshot: Delegation;
+  entity: "run";
+  entityId: string;
+  snapshot: DelegationRun;
+  delegationId?: string;
 }
+
+export interface SessionStoreRecord {
+  version: typeof STORE_VERSION;
+  eventId: string;
+  kind: DelegationEventKind;
+  at: string;
+  entity: "session";
+  entityId: string;
+  snapshot: AgentSession;
+}
+
+export type DelegationStoreRecord = RunStoreRecord | SessionStoreRecord;
 
 export interface SessionEntryLike {
   type: string;

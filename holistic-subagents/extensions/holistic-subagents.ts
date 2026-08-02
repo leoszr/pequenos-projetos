@@ -107,7 +107,7 @@ function registerChildPolicy(pi: ExtensionAPI): void {
     let authority = "Follow the authority declared in the delegation brief.";
     if (encoded) {
       try {
-        authority = `Delegation authority (binding policy, not a sandbox): ${Buffer.from(encoded, "base64url").toString("utf8")}`;
+        authority = `Agent Session authority ceiling (not a sandbox): ${Buffer.from(encoded, "base64url").toString("utf8")}. Each mission brief declares the binding current Run authority and may only restrict this ceiling.`;
       } catch {
         // Keep the safe generic policy.
       }

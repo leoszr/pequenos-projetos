@@ -4,6 +4,10 @@
   "description": "Persistent Pi delegations orchestrated through Herdr",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/leoszr/holistic-subagents.git"
+  },
   "keywords": [
     "pi-package",
     "pi-coding-agent",
@@ -36,7 +40,7 @@
     "@sinclair/typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.0",
+    "@earendil-works/pi-coding-agent": "^0.83.0",
     "@earendil-works/pi-tui": "^0.80.0",
     "@sinclair/typebox": "^0.34.41",
     "@types/node": "^24.0.0",

@@ -50,22 +50,22 @@ export function buildDelegationBrief(delegation: Delegation): string {
     "## Conversation with the parent",
     "You may ask the parent questions. Put the full question, context, impact and options in this pane first.",
     "For a non-blocking doubt, send this signal and continue any safe independent work:",
-    callbackCommand("HOLISTIC_QUESTION", "question=<short-id>"),
+    callbackCommand(delegation, "HOLISTIC_QUESTION", "question=<short-id>"),
     "If an answer is required for safe progress, send this signal once and end your turn:",
-    callbackCommand("HOLISTIC_INPUT_REQUIRED", "question=<short-id>"),
+    callbackCommand(delegation, "HOLISTIC_INPUT_REQUIRED", "question=<short-id>"),
     "When work and evidence are complete, send this signal once and end your turn:",
-    callbackCommand("HOLISTIC_HANDOFF_READY"),
+    callbackCommand(delegation, "HOLISTIC_HANDOFF_READY"),
     "The parent may reply or ask follow-ups in this same persistent pane.",
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-function callbackCommand(marker: string, extra = ""): string {
+function callbackCommand(delegation: Delegation, marker: string, extra = ""): string {
   const suffix = extra ? ` ${extra}` : "";
   return [
     "```bash",
-    `herdr pane run "$HOLISTIC_PARENT_PANE_ID" "[${marker}] delegation=$HOLISTIC_DELEGATION_ID pane=$HERDR_PANE_ID token=$HOLISTIC_CALLBACK_TOKEN${suffix}"`,
+    `herdr pane run "$HOLISTIC_PARENT_PANE_ID" "[${marker}] delegation=${delegation.id} pane=$HERDR_PANE_ID token=${delegation.callbackToken}${suffix}"`,
     "```",
   ].join("\n");
 }
