@@ -1,6 +1,16 @@
+import {
+  HANDOFF_PROTOCOL_VERSION as CURRENT_HANDOFF_PROTOCOL_VERSION,
+  type HandoffManifest,
+} from "../protocol/handoff.ts";
+
 export const STORE_VERSION = 2 as const;
 export const STORE_CUSTOM_TYPE = "holistic-delegation-v2";
 export const LEGACY_STORE_CUSTOM_TYPE = "holistic-delegation-v1";
+export const LEGACY_HANDOFF_PROTOCOL_VERSION = 0 as const;
+export const HANDOFF_PROTOCOL_VERSION = CURRENT_HANDOFF_PROTOCOL_VERSION;
+export type HandoffProtocolVersion =
+  | typeof LEGACY_HANDOFF_PROTOCOL_VERSION
+  | typeof HANDOFF_PROTOCOL_VERSION;
 
 export type RunState =
   | "prepared"
@@ -172,15 +182,34 @@ export interface AcceptanceTicket {
   token: string;
   revision: number;
   inspectedAt: string;
+  cycleId?: string;
+  mutationSequence?: number;
+  manifestSha256?: string;
 }
 
 export interface HandoffCycle {
+  id?: string;
   /** The child emitted HOLISTIC_HANDOFF_READY during this cycle. */
   claimed?: true;
+  manifestId?: string;
+  manifestSha256?: string;
+  /** Validated structured evidence captured by holistic_inspect. */
+  manifest?: HandoffManifest;
+  /** Guards an in-flight live confirmation of an idle runtime event. */
+  pendingIdleConfirmation?: string;
   /** Herdr observed Pi working during this cycle. */
   working?: true;
   /** Herdr observed Pi settle after working during this cycle. */
   settled?: true;
+}
+
+export interface ArtifactRootRegistration {
+  id: string;
+  path: string;
+  durable: boolean;
+  createdAt: string;
+  ownershipToken: string;
+  removedAt?: string;
 }
 
 export interface AgentSession {
@@ -191,6 +220,8 @@ export interface AgentSession {
   parentSessionId: string;
   parentPaneId: string;
   state: AgentSessionState;
+  /** Monotonic version for every persisted Session/active-Run mutation. */
+  mutationSequence: number;
   activeRunId?: string;
   /** Migrated v1 Sessions are inspectable/cleanable but never reusable. */
   sealed?: boolean;
@@ -201,6 +232,7 @@ export interface AgentSession {
   cwd: string;
   runtimeCwd?: string;
   resources: DelegationResource[];
+  artifactRoots: ArtifactRootRegistration[];
   authorityBaseline?: AuthorityBaseline;
   callbackToken: string;
   health?: string;
@@ -217,6 +249,7 @@ export interface DelegationRun {
   parentSessionId: string;
   parentPaneId: string;
   callbackToken: string;
+  handoffProtocolVersion?: HandoffProtocolVersion;
   state: RunState;
   request: DelegationRequest;
   purpose: DelegationPurpose;

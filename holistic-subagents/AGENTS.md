@@ -1,5 +1,16 @@
 # Project Instructions
 
+## Plano atual
+
+- `PLAN.md` contém somente trabalho atual, aprovado e ainda não implementado.
+- Antes de alterar ou executar o plano, confronte cada item com o código, testes,
+  ADRs e commits atuais. Remova imediatamente itens concluídos, superados ou
+  contraditórios.
+- Ao concluir uma etapa, retire-a do `PLAN.md` na mesma mudança. Não mantenha
+  checklists concluídos, histórico de implementação ou contexto stale.
+- Use Git, ADRs, `CONTEXT.md` e documentação de pesquisa para preservar
+  histórico e decisões; `PLAN.md` não é changelog.
+
 ## Publicação e atualização no Pi
 
 - Este diretório é desenvolvido dentro do monorepo `leoszr/pequenos-projetos`.

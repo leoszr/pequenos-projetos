@@ -1,10 +1,26 @@
 import { describe, expect, it } from "vitest";
 
 import { DelegationRepository, InMemoryDelegationStore } from "../../src/domain/store.ts";
+import { SessionMutations } from "../../src/domain/session-mutations.ts";
 import type { Delegation } from "../../src/domain/types.ts";
-import { applyInfrastructureEvent } from "../../src/herdr/reconcile.ts";
+import { applyInfrastructureEvent as reduceInfrastructureEvent } from "../../src/herdr/reconcile.ts";
 import { buildDelegationBrief } from "../../src/protocol/brief.ts";
-import { handleCallbackInput } from "../../src/protocol/callback.ts";
+import { handleCallbackInput as reduceCallbackInput } from "../../src/protocol/callback.ts";
+
+const mutationByRepository = new WeakMap<DelegationRepository, SessionMutations>();
+
+function handleCallbackInput(text: string, repo: DelegationRepository) {
+  const mutations = mutationByRepository.get(repo)!;
+  return mutations.mutate("as1", (draft) => {
+    const result = reduceCallbackInput(text, draft.run, draft.session);
+    if (result.valid && result.delegation) draft.run = result.delegation;
+    return result;
+  });
+}
+
+function applyInfrastructureEvent(repo: DelegationRepository, event: Parameters<typeof reduceInfrastructureEvent>[2]) {
+  return reduceInfrastructureEvent(repo, mutationByRepository.get(repo)!, event);
+}
 
 function fixture(): Delegation {
   return {
@@ -43,6 +59,7 @@ function fixture(): Delegation {
 
 function repository() {
   const repo = new DelegationRepository(new InMemoryDelegationStore());
+  mutationByRepository.set(repo, new SessionMutations(repo));
   const run = fixture();
   repo.saveSession({
     version: 2,
@@ -51,6 +68,7 @@ function repository() {
     parentSessionId: run.parentSessionId,
     parentPaneId: run.parentPaneId,
     state: "busy",
+    mutationSequence: 0,
     activeRunId: run.id,
     trustScope: "/repo",
     authorityCeiling: run.request.authority,
@@ -58,6 +76,7 @@ function repository() {
     topology: run.request.topology,
     cwd: run.request.cwd,
     resources: run.resources,
+    artifactRoots: [],
     callbackToken: run.callbackToken,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
@@ -197,7 +216,68 @@ describe("parent/child protocol", () => {
     reportWorking(repo);
     handleCallbackInput(handoff, repo);
     applyInfrastructureEvent(repo, settled);
+    const sequence = repo.getSession("as1")!.mutationSequence;
     expect(handleCallbackInput(handoff, repo).delegation?.state).toBe("ready_for_review");
     expect(applyInfrastructureEvent(repo, settled)?.state).toBe("ready_for_review");
+    expect(repo.getSession("as1")!.mutationSequence).toBe(sequence);
+  });
+
+  it("keeps structured questions in the active cycle", () => {
+    const repo = repository();
+    const run = repo.get("d1")!;
+    repo.save({
+      ...run,
+      handoffProtocolVersion: 1,
+      handoff: { id: "cycle-1", working: true },
+      revision: 4,
+    }, "transition");
+
+    const result = handleCallbackInput(
+      "[HOLISTIC_QUESTION] delegation=d1 pane=p1 token=secret-token cycle=cycle-1 question=q1",
+      repo,
+    );
+
+    expect(result.delegation).toMatchObject({
+      revision: 4,
+      handoff: { id: "cycle-1", working: true },
+      questions: [{ id: "q1", blocking: false }],
+    });
+  });
+
+  it("rejects stale cycles and incomplete structured handoff claims", () => {
+    const repo = repository();
+    const run = repo.get("d1")!;
+    repo.save({ ...run, handoffProtocolVersion: 1, handoff: { id: "cycle-2" } }, "transition");
+
+    expect(handleCallbackInput(
+      "[HOLISTIC_HANDOFF_READY] delegation=d1 pane=p1 token=secret-token cycle=cycle-1 manifest=m1 sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      repo,
+    )).toMatchObject({ valid: false, reason: expect.stringContaining("stale") });
+    expect(handleCallbackInput(
+      "[HOLISTIC_HANDOFF_READY] delegation=d1 pane=p1 token=secret-token cycle=cycle-2",
+      repo,
+    )).toMatchObject({ valid: false, reason: "structured handoff claim is incomplete" });
+  });
+
+  it("correlates a structured claim that arrives after settlement", () => {
+    const repo = repository();
+    const run = repo.get("d1")!;
+    repo.save({
+      ...run,
+      handoffProtocolVersion: 1,
+      handoff: { id: "cycle-1", working: true, settled: true },
+    }, "transition");
+    const result = handleCallbackInput(
+      "[HOLISTIC_HANDOFF_READY] delegation=d1 pane=p1 token=secret-token cycle=cycle-1 manifest=m1 sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      repo,
+    );
+    expect(result.delegation).toMatchObject({
+      state: "ready_for_review",
+      handoff: {
+        id: "cycle-1",
+        manifestId: "m1",
+        manifestSha256: "a".repeat(64),
+      },
+    });
   });
 });

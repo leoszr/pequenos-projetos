@@ -1,12 +1,35 @@
 import { describe, expect, it } from "vitest";
 
 import { DelegationRepository, InMemoryDelegationStore } from "../../src/domain/store.ts";
+import { SessionMutations } from "../../src/domain/session-mutations.ts";
 import type { Delegation } from "../../src/domain/types.ts";
-import { applyInfrastructureEvent, reconcileSnapshot } from "../../src/herdr/reconcile.ts";
-import { handleCallbackInput } from "../../src/protocol/callback.ts";
+import {
+  applyInfrastructureEvent as reduceInfrastructureEvent,
+  reconcileSnapshot as reduceSnapshot,
+} from "../../src/herdr/reconcile.ts";
+import { handleCallbackInput as reduceCallbackInput } from "../../src/protocol/callback.ts";
+
+const mutationByRepository = new WeakMap<DelegationRepository, SessionMutations>();
+
+function applyInfrastructureEvent(repo: DelegationRepository, event: Parameters<typeof reduceInfrastructureEvent>[2]) {
+  return reduceInfrastructureEvent(repo, mutationByRepository.get(repo)!, event);
+}
+
+function reconcileSnapshot(repo: DelegationRepository, snapshot: Parameters<typeof reduceSnapshot>[2]) {
+  return reduceSnapshot(repo, mutationByRepository.get(repo)!, snapshot);
+}
+
+function handleCallbackInput(text: string, repo: DelegationRepository) {
+  return mutationByRepository.get(repo)!.mutate("as1", (draft) => {
+    const result = reduceCallbackInput(text, draft.run, draft.session);
+    if (result.valid && result.delegation) draft.run = result.delegation;
+    return result;
+  });
+}
 
 function repo(store = new InMemoryDelegationStore()): DelegationRepository {
   const repository = new DelegationRepository(store);
+  mutationByRepository.set(repository, new SessionMutations(repository));
   const delegation: Delegation = {
     version: 2,
     id: "d1",
@@ -46,6 +69,7 @@ function repo(store = new InMemoryDelegationStore()): DelegationRepository {
     parentSessionId: delegation.parentSessionId,
     parentPaneId: delegation.parentPaneId,
     state: "busy",
+    mutationSequence: 0,
     activeRunId: delegation.id,
     trustScope: "/repo",
     authorityCeiling: delegation.request.authority,
@@ -53,6 +77,7 @@ function repo(store = new InMemoryDelegationStore()): DelegationRepository {
     topology: delegation.request.topology,
     cwd: delegation.request.cwd,
     resources: delegation.resources,
+    artifactRoots: [],
     callbackToken: delegation.callbackToken,
     createdAt: delegation.createdAt,
     updatedAt: delegation.updatedAt,
@@ -135,6 +160,7 @@ describe("Herdr reconciliation", () => {
       repository,
     );
     const reloaded = new DelegationRepository(store);
+    mutationByRepository.set(reloaded, new SessionMutations(reloaded));
 
     reconcileSnapshot(reloaded, {
       protocol: 17,

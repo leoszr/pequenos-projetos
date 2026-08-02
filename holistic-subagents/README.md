@@ -18,6 +18,9 @@ TypeScript executa delegações persistentes pelo socket do Herdr.
 - cinco tools `holistic_*`, dashboard `/holistic` e modo de delegação opt-in.
 - Agent Sessions reutilizáveis separadas de Delegation Runs limitadas; reviewer
   warm por padrão e `requiresCleanContext` explícito para contexto limpo.
+- mutações ordenadas por Agent Session, com confirmação otimista após I/O;
+- handoff JSON íntegro e versionado, com artifacts locais validados por tamanho,
+  media type e SHA-256; transcript é apenas diagnóstico para Runs novas.
 
 ## Requisitos
 
@@ -122,5 +125,10 @@ recebem tools coordenadoras e não podem delegar novamente.
 Read-only é uma política instruída e auditada, não sandbox. Para garantia forte
 use isolamento externo. Worktrees sujas, branches não preservadas e metadata de
 ownership divergente bloqueiam cleanup.
+
+Roots temporários privados em `/tmp` carregam somente artifacts descartáveis.
+Lifecycle, mensagens e estado durável continuam no Pi/Herdr. Cleanup remove
+somente roots temporários com ownership compatível e preserva arquivos duráveis
+do checkout/worktree.
 
 Resultados do último E2E: [TEST_RESULTS.md](TEST_RESULTS.md).

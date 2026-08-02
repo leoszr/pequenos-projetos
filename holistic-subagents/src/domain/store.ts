@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  LEGACY_HANDOFF_PROTOCOL_VERSION,
   LEGACY_STORE_CUSTOM_TYPE,
   STORE_CUSTOM_TYPE,
   STORE_VERSION,
@@ -85,7 +86,7 @@ export function recordsFromSessionEntries(
     if (entry.customType === STORE_CUSTOM_TYPE && isV2Record(entry.data)) {
       if (!seen.has(entry.data.eventId)) {
         seen.add(entry.data.eventId);
-        records.push(structuredClone(entry.data));
+        records.push(normalizeV2Record(entry.data));
       }
       continue;
     }
@@ -97,6 +98,30 @@ export function recordsFromSessionEntries(
     records.push(...adaptLegacyRecord(entry.data));
   }
   return records;
+}
+
+function normalizeV2Record(record: DelegationStoreRecord): DelegationStoreRecord {
+  if (record.entity === "run") {
+    return {
+      ...structuredClone(record),
+      snapshot: {
+        ...structuredClone(record.snapshot),
+        handoffProtocolVersion: record.snapshot.handoffProtocolVersion
+          ?? LEGACY_HANDOFF_PROTOCOL_VERSION,
+      },
+    };
+  }
+  return {
+    ...structuredClone(record),
+    snapshot: {
+      ...structuredClone(record.snapshot),
+      mutationSequence: Number.isSafeInteger(record.snapshot.mutationSequence)
+        && record.snapshot.mutationSequence >= 0
+        ? record.snapshot.mutationSequence
+          : 0,
+        artifactRoots: structuredClone(record.snapshot.artifactRoots ?? []),
+    },
+  };
 }
 
 function adaptLegacyRecord(record: LegacyStoreRecord): DelegationStoreRecord[] {
@@ -111,6 +136,7 @@ function adaptLegacyRecord(record: LegacyStoreRecord): DelegationStoreRecord[] {
     parentSessionId: legacy.parentSessionId,
     parentPaneId: legacy.parentPaneId,
     callbackToken: legacy.callbackToken,
+    handoffProtocolVersion: LEGACY_HANDOFF_PROTOCOL_VERSION,
     state: legacyRunState(legacy.state),
     request: structuredClone(legacy.request),
     purpose: legacy.purpose,
@@ -135,6 +161,7 @@ function adaptLegacyRecord(record: LegacyStoreRecord): DelegationStoreRecord[] {
     parentSessionId: legacy.parentSessionId,
     parentPaneId: legacy.parentPaneId,
     state: terminal ? (legacy.state === "failed" ? "failed" : "closed") : "busy",
+    mutationSequence: 0,
     activeRunId: terminal ? undefined : legacy.id,
     sealed: true,
     trustScope: legacy.authorityBaseline?.gitRoot ?? legacy.request.cwd,
@@ -144,6 +171,7 @@ function adaptLegacyRecord(record: LegacyStoreRecord): DelegationStoreRecord[] {
     cwd: legacy.runtimeCwd ?? legacy.request.cwd,
     runtimeCwd: legacy.runtimeCwd,
     resources: structuredClone(legacy.resources ?? []),
+    artifactRoots: [],
     authorityBaseline: structuredClone(legacy.authorityBaseline),
     callbackToken: legacy.callbackToken,
     health: legacy.health,
@@ -228,7 +256,8 @@ export class DelegationRepository {
 
   constructor(store: DelegationStorePort) {
     this.#store = store;
-    for (const record of store.records()) {
+    for (const rawRecord of store.records()) {
+      const record = normalizeV2Record(rawRecord);
       if (record.entity === "run") {
         this.#runs.set(record.entityId, structuredClone(record.snapshot));
       } else {
@@ -295,7 +324,7 @@ export class DelegationRepository {
         this.#quarantineOrphan(session, "Session startup has no persisted Run");
         continue;
       }
-      if (session.state !== "busy" || !session.activeRunId) continue;
+      if (!["starting", "busy"].includes(session.state) || !session.activeRunId) continue;
       const run = this.#runs.get(session.activeRunId);
       if (!run) {
         this.#quarantineOrphan(session, `active Run ${session.activeRunId} is missing`);
@@ -305,6 +334,7 @@ export class DelegationRepository {
       const accepted = run.state === "accepted";
       const repaired: AgentSession = {
         ...session,
+        mutationSequence: session.mutationSequence + 1,
         state: accepted ? "idle" : "failed",
         activeRunId: undefined,
         failure: accepted ? session.failure : run.failure ?? `active Run ended as ${run.state}`,
@@ -319,6 +349,7 @@ export class DelegationRepository {
   #quarantineOrphan(session: AgentSession, failure: string): void {
     const repaired: AgentSession = {
       ...session,
+      mutationSequence: session.mutationSequence + 1,
       state: "failed",
       activeRunId: undefined,
       health: "failed",

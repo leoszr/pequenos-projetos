@@ -73,7 +73,7 @@ async function delegationMenu(
     const result = await service.inspect(delegation.id);
     pi.sendMessage({
       customType: "holistic-inspection",
-      content: `${display(result.delegation)}\nAuthority: ${result.audit.ok ? "ok" : result.audit.violations.join("; ")}\n\n${result.paneOutput}`,
+      content: `${display(result.delegation)}\nAuthority: ${result.audit.ok ? "ok" : result.audit.violations.join("; ")}${artifactSummary(result.delegation)}\n\n${result.paneOutput}`,
       display: true,
     });
   } else if (action === "Focus pane") {
@@ -109,7 +109,15 @@ async function delegationMenu(
 }
 
 function display(delegation: Delegation): string {
-  return `${delegation.request.name} — ${delegation.state} — ${delegation.id.slice(0, 8)}`;
+  const artifacts = delegation.handoff?.manifest?.artifacts.length ?? 0;
+  return `${delegation.request.name} — ${delegation.state} — ${delegation.id.slice(0, 8)}${artifacts ? ` — ${artifacts} artifact(s)` : ""}`;
+}
+
+function artifactSummary(delegation: Delegation): string {
+  const refs = delegation.handoff?.manifest?.artifacts ?? [];
+  return refs.length
+    ? `\nArtifacts:\n${refs.map((ref) => `- ${ref.id} · ${ref.mediaType} · ${ref.size} bytes · sha256:${ref.sha256}`).join("\n")}`
+    : "";
 }
 
 function formatList(delegations: Delegation[]): string {

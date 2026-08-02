@@ -133,6 +133,43 @@ def validate_callbacks() -> None:
         fail(f"callback parser is incomplete: {sorted(missing)}")
 
 
+def validate_handoff_protocol() -> None:
+    source = (ROOT / "src/protocol/handoff.ts").read_text()
+    required = {
+        "HANDOFF_PROTOCOL_VERSION",
+        "HandoffManifest",
+        "ArtifactRef",
+        "cycleId",
+        "mediaType",
+        "sha256",
+    }
+    missing = required - {marker for marker in required if marker in source}
+    if missing:
+        fail(f"structured handoff schema is incomplete: {sorted(missing)}")
+    contract = (ROOT / "skills/holistic-subagents/references/delegation-contract.md").read_text()
+    for marker in (
+        "HOLISTIC_ARTIFACT_ROOT",
+        "cycle=<current-cycle-id>",
+        "manifest=$manifest_id",
+        "sha256=$manifest_sha256",
+    ):
+        if marker not in contract:
+            fail(f"delegation contract is missing structured handoff marker: {marker}")
+
+
+def validate_runtime_writers() -> None:
+    allowed = ROOT / "src/domain/session-mutations.ts"
+    writer = re.compile(r"\.save(?:Session)?\(")
+    offenders: list[str] = []
+    for path in (ROOT / "src").rglob("*.ts"):
+        if path == allowed:
+            continue
+        if writer.search(path.read_text()):
+            offenders.append(str(path.relative_to(ROOT)))
+    if offenders:
+        fail(f"runtime repository writers bypass SessionMutations: {sorted(offenders)}")
+
+
 def collect_consts(value: Any) -> set[str]:
     found: set[str] = set()
     if isinstance(value, dict):
@@ -210,10 +247,12 @@ def main() -> None:
     validate_links()
     models = validate_policy()
     validate_callbacks()
+    validate_handoff_protocol()
+    validate_runtime_writers()
     validate_herdr()
     validate_model_availability(models)
     print(
-        "OK: hybrid manifest, skill, links, callback protocol, Herdr socket API, "
+        "OK: hybrid manifest, skill, links, callback/handoff protocol, exclusive runtime writer, Herdr socket API, "
         f"and {len(models)} default-policy models validated"
     )
 

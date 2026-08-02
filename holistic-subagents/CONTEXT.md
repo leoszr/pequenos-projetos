@@ -46,3 +46,26 @@ ter autoridade contida nesse teto.
 
 Identidade do âmbito confiável no qual uma Agent Session pode ser reutilizada.
 Reuso exige igualdade exata de escopo.
+
+## Handoff Cycle
+
+Período de trabalho iniciado por uma mensagem do pai para uma Delegation Run.
+Perguntas do filho pertencem ao ciclo ativo; somente outra mensagem do pai cria
+um ciclo. Claims e eventos de ciclos anteriores não alteram o ciclo atual.
+
+## Handoff Manifest
+
+Resultado estruturado e íntegro de um Handoff Cycle. Resume o trabalho e
+referencia comandos, arquivos, commits, riscos e artifacts sem depender do
+trecho recente da conversa.
+
+## Artifact Ref
+
+Referência imutável a uma evidência local. Sua identidade só é resolvível dentro
+de um root registrado da Agent Session e inclui media type, tamanho e SHA-256.
+
+## Acceptance Ticket
+
+Comprovação de que o pai inspecionou a revisão e o Handoff Cycle atuais. Vincula
+a inspeção à Session Mutation Sequence e, quando aplicável, ao hash do Handoff
+Manifest; qualquer mudança posterior a torna obsoleta.

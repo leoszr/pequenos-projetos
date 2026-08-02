@@ -40,11 +40,12 @@ export function isActiveState(state: DelegationState): boolean {
 }
 
 /**
- * Starts a new child-work cycle. A parent prompt or a new child question
- * invalidates both sides of the prior handoff as well as its inspection.
+ * Starts a new child-work cycle for a parent prompt and invalidates both sides
+ * of the prior handoff as well as its inspection.
  */
 export function beginHandoffCycle(
   delegation: Delegation,
+  cycleId?: string,
   now = new Date().toISOString(),
 ): Delegation {
   const working = delegation.state === "working"
@@ -53,30 +54,39 @@ export function beginHandoffCycle(
   return {
     ...working,
     health: "working",
-    handoff: undefined,
+    handoff: cycleId ? { id: cycleId } : undefined,
     revision: delegation.revision + 1,
     acceptanceTicket: undefined,
     updatedAt: now,
   };
 }
 
-/** Starts a new cycle from a callback emitted during the child's active turn. */
+/** Legacy compatibility: old question callbacks started an implicit cycle. */
 export function beginHandoffCycleFromWorking(
   delegation: Delegation,
+  cycleId?: string,
   now = new Date().toISOString(),
 ): Delegation {
-  return recordRuntimeStatus(beginHandoffCycle(delegation, now), "working", now);
+  return recordRuntimeStatus(beginHandoffCycle(delegation, cycleId, now), "working", now);
 }
 
 /** Records a semantic handoff claim and promotes only if this revision settled. */
 export function recordHandoffClaim(
   delegation: Delegation,
+  claim?: { cycleId?: string; manifestId?: string; manifestSha256?: string },
   now = new Date().toISOString(),
 ): Delegation {
-  if (delegation.state !== "working") return delegation;
+  if (claim?.cycleId && delegation.handoff?.id !== claim.cycleId) return delegation;
+  if (!["starting", "working"].includes(delegation.state)) return delegation;
   return settleHandoff({
     ...delegation,
-    handoff: { ...delegation.handoff, claimed: true },
+    handoff: {
+      ...delegation.handoff,
+      id: delegation.handoff?.id ?? claim?.cycleId,
+      claimed: true,
+      manifestId: claim?.manifestId,
+      manifestSha256: claim?.manifestSha256,
+    },
     acceptanceTicket: undefined,
     updatedAt: now,
   }, now);
@@ -92,21 +102,43 @@ export function recordRuntimeStatus(
   now = new Date().toISOString(),
 ): Delegation {
   if (status === "working") {
+    const current = delegation.state === "starting"
+      ? transitionDelegation(delegation, "working", now)
+      : delegation;
+    if (current.health === "working"
+      && current.handoff?.working === true
+      && current.handoff.settled !== true
+      && !current.handoff.pendingIdleConfirmation) return current;
     return {
-      ...delegation,
+      ...current,
       health: "working",
-      handoff: { ...delegation.handoff, working: true, settled: undefined },
+      handoff: {
+        ...current.handoff,
+        working: true,
+        settled: undefined,
+        pendingIdleConfirmation: undefined,
+      },
       acceptanceTicket: undefined,
       updatedAt: now,
     };
   }
 
+  const settles = status === "idle"
+    && delegation.handoff?.working === true
+    && delegation.handoff.settled !== true;
+  if (delegation.health === status && !settles) return delegation;
   const updated = {
     ...delegation,
     health: status,
-    handoff: status === "idle" && delegation.handoff?.working
-      ? { ...delegation.handoff, settled: true as const }
-      : delegation.handoff,
+    handoff: settles
+      ? {
+          ...delegation.handoff,
+          settled: true as const,
+          pendingIdleConfirmation: undefined,
+        }
+      : status !== "idle" && delegation.handoff?.pendingIdleConfirmation
+        ? { ...delegation.handoff, pendingIdleConfirmation: undefined }
+        : delegation.handoff,
     updatedAt: now,
   };
   return settleHandoff(updated, now);

@@ -124,7 +124,7 @@ export function registerHolisticTools(
         const result = await getService().inspect(params.id, signal);
         onChange();
         return toolResult(
-          `${summary(result.delegation)}\nAuthority: ${result.audit.ok ? "ok" : result.audit.violations.join("; ")}\n\n${result.paneOutput}`,
+          `${summary(result.delegation)}\nAuthority: ${result.audit.ok ? "ok" : result.audit.violations.join("; ")}${artifactSummary(result.delegation)}\n\n${result.paneOutput}`,
           result,
         );
       } catch (error) {
@@ -213,6 +213,15 @@ function summary(delegation: {
 
 function toolResult(text: string, details: unknown) {
   return { content: [{ type: "text" as const, text }], details };
+}
+
+function artifactSummary(delegation: {
+  handoff?: { manifest?: { artifacts: Array<{ id: string; mediaType: string; size: number; sha256: string }> } };
+}): string {
+  const refs = delegation.handoff?.manifest?.artifacts ?? [];
+  return refs.length
+    ? `\nArtifacts:\n${refs.map((ref) => `- ${ref.id} · ${ref.mediaType} · ${ref.size} bytes · sha256:${ref.sha256}`).join("\n")}`
+    : "";
 }
 
 function toolError(error: unknown) {

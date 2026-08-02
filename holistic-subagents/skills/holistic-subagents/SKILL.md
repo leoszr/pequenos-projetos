@@ -100,14 +100,16 @@ The child can converse with you:
 - `[HOLISTIC_HANDOFF_READY]` records the handoff claim; the Run moves to
   `ready_for_review` only after the corresponding `agent_settled` status.
 
-Callbacks are authenticated and transformed into readable parent input. Inspect
-the child once after a signal; the full question/handoff remains in its pane.
+Callbacks are authenticated and correlated to the active handoff cycle. Inspect
+the child once after a signal. The pane carries diagnostic conversation; new
+Runs publish the complete handoff as a structured manifest with artifact refs.
 
 ## Review and acceptance
 
-`ready_for_review` is a claim, not proof. Call `holistic_inspect` to read the
-handoff and audit Git/authority. Check diffs, tests, logs, sources or artifacts
-proportionally to risk.
+`ready_for_review` is a claim, not proof. Call `holistic_inspect` to validate the
+manifest, artifact integrity and Git authority. Do not substitute recent pane
+output for a missing or invalid manifest on new Runs. Check diffs, tests, logs,
+sources or artifacts proportionally to risk.
 
 Treat the structured `Authority`/`audit.ok` returned by `holistic_inspect` as
 the authority for workspace cleanliness. The child's prose may be mistaken or
@@ -134,9 +136,10 @@ accept themselves.
 
 ## Cleanup
 
-Track state through the extension ledger. `holistic_manage` closes only owned
-resources and refuses dirty or ownership-divergent cleanup. Preserve/integrate
-useful commits and artifacts before closing. Never use discard/force merely to
-hide unreviewed work.
+Track state and artifact roots through the extension ledger. `holistic_manage`
+closes only owned resources, removes only owned temporary roots and refuses
+dirty or ownership-divergent cleanup. Preserve/integrate useful commits and
+durable artifacts before closing. Never use discard/force merely to hide
+unreviewed work.
 
 The user can inspect and act on the same delegations with `/holistic`.

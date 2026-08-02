@@ -82,8 +82,7 @@ export async function createCoordinatorRuntime(
         const unsubscribe = await client.subscribe(
           [{ type: "pane.agent_status_changed", pane_id: paneId }],
           (event) => {
-            service.onInfrastructureEvent(event);
-            onChange();
+            void service.onInfrastructureEvent(event).then(() => onChange()).catch(() => undefined);
           },
         );
         unsubscribers.set(paneId, unsubscribe);

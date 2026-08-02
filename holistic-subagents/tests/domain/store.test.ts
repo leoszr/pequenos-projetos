@@ -20,6 +20,7 @@ const delegation: Delegation = {
   parentSessionId: "s1",
   parentPaneId: "p1",
   callbackToken: "secret",
+  handoffProtocolVersion: 0,
   state: "prepared",
   purpose: "execution",
   reviewerIds: [],
@@ -54,6 +55,7 @@ function session(state: AgentSession["state"] = "busy"): AgentSession {
     parentSessionId: delegation.parentSessionId,
     parentPaneId: delegation.parentPaneId,
     state,
+    mutationSequence: 0,
     activeRunId: state === "busy" ? delegation.id : undefined,
     trustScope: "/tmp",
     authorityCeiling: delegation.request.authority,
@@ -61,6 +63,7 @@ function session(state: AgentSession["state"] = "busy"): AgentSession {
     topology: delegation.request.topology,
     cwd: delegation.request.cwd,
     resources: [],
+    artifactRoots: [],
     callbackToken: delegation.callbackToken,
     createdAt: delegation.createdAt,
     updatedAt: delegation.updatedAt,
@@ -69,6 +72,29 @@ function session(state: AgentSession["state"] = "busy"): AgentSession {
 }
 
 describe("delegation event store", () => {
+  it("normalizes older v2 snapshots to Sequence zero and legacy handoff", () => {
+    const { mutationSequence: _sequence, artifactRoots: _roots, ...oldSession } = session();
+    const { handoffProtocolVersion: _protocol, ...oldRun } = delegation;
+    const memory = new InMemoryDelegationStore([
+      {
+        version: 2, eventId: "session-old", kind: "created", at: oldSession.updatedAt,
+        entity: "session", entityId: oldSession.id, snapshot: oldSession,
+      },
+      {
+        version: 2, eventId: "run-old", kind: "created", at: oldRun.updatedAt,
+        entity: "run", entityId: oldRun.id, delegationId: oldRun.id, snapshot: oldRun,
+      },
+    ] as never);
+
+    const repository = new DelegationRepository(memory);
+
+    expect(repository.getSession(oldSession.id)).toMatchObject({
+      mutationSequence: 0,
+      artifactRoots: [],
+    });
+    expect(repository.get(oldRun.id)?.handoffProtocolVersion).toBe(0);
+  });
+
   it("rebuilds snapshots and ignores duplicate event IDs", () => {
     const memory = new InMemoryDelegationStore();
     const repository = new DelegationRepository(memory);
@@ -175,6 +201,7 @@ describe("delegation event store", () => {
 
   it.each([
     ["starting without an active Run", { ...session("idle"), state: "starting" as const }],
+    ["starting with a missing active Run", { ...session("busy"), state: "starting" as const, activeRunId: "missing" }],
     ["busy with a missing active Run", { ...session("busy"), activeRunId: "missing" }],
   ])("quarantines an orphan reservation: %s", (_label, orphan) => {
     const memory = new InMemoryDelegationStore();

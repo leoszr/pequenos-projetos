@@ -1,4 +1,8 @@
 import {
+  SessionMutations,
+  type SessionMutationDraft,
+} from "../domain/session-mutations.ts";
+import {
   isActiveState,
   recordRuntimeStatus,
   transitionDelegation,
@@ -7,7 +11,6 @@ import { DelegationRepository } from "../domain/store.ts";
 import {
   isAgentRuntimeStatus,
   type AgentRuntimeStatus,
-  type AgentSession,
   type Delegation,
 } from "../domain/types.ts";
 import type { HerdrSnapshot, HerdrSubscriptionEvent } from "./client.ts";
@@ -19,6 +22,7 @@ export interface ReconciliationResult {
 
 export function reconcileSnapshot(
   repository: DelegationRepository,
+  mutations: SessionMutations,
   snapshot: HerdrSnapshot,
   now = new Date().toISOString(),
 ): ReconciliationResult {
@@ -29,34 +33,53 @@ export function reconcileSnapshot(
   ]);
   const updated: Delegation[] = [];
 
-  for (const delegation of repository.list()) {
-    const paneResource = delegation.resources.find((resource) => resource.kind === "pane");
-    if (!paneResource || !isActiveState(delegation.state)) continue;
+  for (const observed of repository.list()) {
+    const paneResource = observed.resources.find((resource) => resource.kind === "pane");
+    if (!paneResource || !isActiveState(observed.state)) continue;
     const pane = panes.get(paneResource.id);
-    let next = delegation;
-    if (!pane) {
-      next = transitionDelegation(delegation, "failed", now);
-      next = { ...next, failure: "owned pane is missing from Herdr snapshot", health: "missing" };
-    } else {
-      const owner = pane.tokens?.owner;
-      if (owner && owner !== delegation.resources[0]?.ownershipToken.slice(0, 32)) {
-        next = transitionDelegation(delegation, "failed", now);
-        next = { ...next, failure: "Herdr ownership metadata diverged", health: "ownership_mismatch" };
-      } else {
-        next = persistRuntimeStatus(repository, next, pane.agent_status, now);
-        updated.push(next);
-        continue;
+    const next = mutations.mutate(observed.sessionId, (draft) => {
+      if (!draft.run || draft.run.id !== observed.id || !isActiveState(draft.run.state)) {
+        return draft.run;
       }
-    }
-    repository.save(
-      next,
-      next.state !== delegation.state ? "transition" : "health",
-    );
-    if (next.state === "failed" && delegation.sessionId) {
-      const session = repository.getSession(delegation.sessionId);
-      if (session) repository.saveSession({ ...session, state: "failed", activeRunId: undefined, failure: next.failure, health: next.health, updatedAt: now }, "transition");
-    }
-    updated.push(next);
+      if (!pane) {
+        const failure = "owned pane is missing from Herdr snapshot";
+        draft.run = {
+          ...transitionDelegation(draft.run, "failed", now),
+          failure,
+          health: "missing",
+        };
+        draft.session = {
+          ...draft.session,
+          state: "failed",
+          activeRunId: undefined,
+          failure,
+          health: "missing",
+          updatedAt: now,
+        };
+        return draft.run;
+      }
+      const owner = pane.tokens?.owner;
+      if (owner && owner !== draft.run.resources[0]?.ownershipToken.slice(0, 32)) {
+        const failure = "Herdr ownership metadata diverged";
+        draft.run = {
+          ...transitionDelegation(draft.run, "failed", now),
+          failure,
+          health: "ownership_mismatch",
+        };
+        draft.session = {
+          ...draft.session,
+          state: "failed",
+          activeRunId: undefined,
+          failure,
+          health: "ownership_mismatch",
+          updatedAt: now,
+        };
+        return draft.run;
+      }
+      persistRuntimeStatus(draft, pane.agent_status, now);
+      return draft.run;
+    }, { kinds: { run: "health", session: "health" } });
+    if (next) updated.push(next);
   }
 
   const orphanPaneIds = (snapshot.panes ?? [])
@@ -67,6 +90,7 @@ export function reconcileSnapshot(
 
 export function applyInfrastructureEvent(
   repository: DelegationRepository,
+  mutations: SessionMutations,
   event: HerdrSubscriptionEvent,
   now = new Date().toISOString(),
 ): Delegation | undefined {
@@ -77,39 +101,56 @@ export function applyInfrastructureEvent(
     candidate.resources.some((resource) => resource.kind === "pane" && resource.id === paneId),
   );
   if (!session?.activeRunId) return undefined;
-  const delegation = repository.get(session.activeRunId);
-  if (!delegation) return undefined;
 
+  return mutations.mutate(session.id, (draft) => {
+    return reduceInfrastructureEvent(draft, event, now);
+  }, { kinds: { run: "health", session: "health" } });
+}
+
+export function reduceInfrastructureEvent(
+  draft: SessionMutationDraft,
+  event: HerdrSubscriptionEvent,
+  now = new Date().toISOString(),
+): Delegation | undefined {
+  if (!draft.run) return undefined;
+  const data = (event.data ?? event) as Record<string, unknown>;
+  const paneId = typeof data.pane_id === "string" ? data.pane_id : undefined;
+  if (!paneId || !draft.session.resources.some((resource) =>
+    resource.kind === "pane" && resource.id === paneId
+  )) return undefined;
   const kind = String(data.type ?? event.event);
-  if ((kind.includes("closed") || kind.includes("exited")) && isActiveState(delegation.state)) {
-    const failed = {
-      ...transitionDelegation(delegation, "failed", now),
-      failure: `Herdr reported ${kind}`,
+  if ((kind.includes("closed") || kind.includes("exited")) && isActiveState(draft.run.state)) {
+    const failure = `Herdr reported ${kind}`;
+    draft.run = {
+      ...transitionDelegation(draft.run, "failed", now),
+      failure,
       health: "exited",
     };
-    repository.save(failed, "transition");
-    repository.saveSession({ ...session, state: "failed", failure: failed.failure, health: "exited", activeRunId: undefined, updatedAt: now }, "transition");
-    return failed;
+    draft.session = {
+      ...draft.session,
+      state: "failed",
+      failure,
+      health: "exited",
+      activeRunId: undefined,
+      updatedAt: now,
+    };
+    return draft.run;
   }
   const status = isAgentRuntimeStatus(data.agent_status) ? data.agent_status : undefined;
-  if (status) {
-    return persistRuntimeStatus(repository, delegation, status, now, session);
-  }
-  return undefined;
+  if (!status) return undefined;
+  persistRuntimeStatus(draft, status, now);
+  return draft.run;
 }
 
 function persistRuntimeStatus(
-  repository: DelegationRepository,
-  delegation: Delegation,
+  draft: { run?: Delegation; session: { health?: string; updatedAt: string } },
   status: AgentRuntimeStatus,
   now: string,
-  knownSession?: AgentSession,
-): Delegation {
-  const updated = recordRuntimeStatus(delegation, status, now);
-  repository.save(updated, updated.state !== delegation.state ? "transition" : "health");
-  const session = knownSession ?? repository.getSession(delegation.sessionId);
-  if (session) {
-    repository.saveSession({ ...session, health: status, updatedAt: now }, "health");
+): void {
+  if (!draft.run) return;
+  const updated = recordRuntimeStatus(draft.run, status, now);
+  if (updated !== draft.run) draft.run = updated;
+  if (draft.session.health !== status) {
+    draft.session = { ...draft.session, health: status, updatedAt: now };
   }
-  return updated;
 }
