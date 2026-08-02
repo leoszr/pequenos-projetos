@@ -1,10 +1,18 @@
 import { timingSafeEqual } from "node:crypto";
 
-import { transitionDelegation } from "../domain/state-machine.ts";
+import {
+  beginHandoffCycle,
+  beginHandoffCycleFromWorking,
+  recordHandoffClaim,
+  transitionDelegation,
+} from "../domain/state-machine.ts";
 import { DelegationRepository } from "../domain/store.ts";
 import type { Delegation, DelegationQuestion } from "../domain/types.ts";
 
-export type CallbackKind = "question" | "input_required" | "handoff_ready";
+export type CallbackKind =
+  | "question"
+  | "input_required"
+  | "handoff_ready";
 
 export interface ParsedCallback {
   kind: CallbackKind;
@@ -74,11 +82,12 @@ export function handleCallbackInput(
         summary: "Read the child pane for the full question, impact and options.",
         openedAt: now,
       };
+      updated = callback.kind === "question"
+        ? beginHandoffCycleFromWorking(updated, now)
+        : beginHandoffCycle(updated, now);
       updated = {
         ...updated,
         questions: [...updated.questions, question],
-        revision: updated.revision + 1,
-        acceptanceTicket: undefined,
         updatedAt: now,
       };
     }
@@ -96,19 +105,15 @@ export function handleCallbackInput(
     };
   }
 
-  if (updated.state === "working") {
-    updated = {
-      ...transitionDelegation(updated, "ready_for_review", now),
-      revision: updated.revision + 1,
-      acceptanceTicket: undefined,
-    };
-    repository.save(updated, "transition");
-  }
+  updated = recordHandoffClaim(updated, now);
+  repository.save(updated, updated.state === "ready_for_review" ? "transition" : "health");
   return {
     matched: true,
     valid: true,
     delegation: updated,
-    transformedText: `Delegation ${updated.id} has a handoff ready for review. Use holistic_inspect before accepting it.`,
+    transformedText: updated.state === "ready_for_review"
+      ? `Delegation ${updated.id} has a handoff ready for review. Use holistic_inspect before accepting it.`
+      : `Delegation ${updated.id} claimed a handoff and is waiting for agent_settled before review.`,
   };
 }
 

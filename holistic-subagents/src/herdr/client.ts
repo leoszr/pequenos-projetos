@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 
+import type { AgentRuntimeStatus } from "../domain/types.ts";
+
 export interface HerdrRequestOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -26,7 +28,7 @@ export interface HerdrPane {
   pane_id: string;
   workspace_id: string;
   tab_id: string;
-  agent_status: "idle" | "working" | "blocked" | "done" | "unknown";
+  agent_status: AgentRuntimeStatus;
   cwd?: string | null;
   tokens?: Record<string, string>;
   [key: string]: unknown;

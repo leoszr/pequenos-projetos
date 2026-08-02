@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { DelegationRepository, InMemoryDelegationStore } from "../../src/domain/store.ts";
 import type { Delegation } from "../../src/domain/types.ts";
+import { applyInfrastructureEvent } from "../../src/herdr/reconcile.ts";
 import { buildDelegationBrief } from "../../src/protocol/brief.ts";
 import { handleCallbackInput } from "../../src/protocol/callback.ts";
 
@@ -66,6 +67,13 @@ function repository() {
   return repo;
 }
 
+function reportWorking(repo: DelegationRepository): void {
+  applyInfrastructureEvent(repo, {
+    event: "pane.agent_status_changed",
+    data: { pane_id: "p1", agent_status: "working" },
+  });
+}
+
 describe("parent/child protocol", () => {
   it("builds a brief with non-blocking and blocking conversation", () => {
     const brief = buildDelegationBrief(fixture());
@@ -85,6 +93,53 @@ describe("parent/child protocol", () => {
     expect(result.delegation?.questions[0]).toMatchObject({ id: "q1", blocking: false });
   });
 
+  it("starts a new cycle when a new question follows a settled handoff", () => {
+    const repo = repository();
+    const run = repo.get("d1")!;
+    repo.save({
+      ...run,
+      state: "ready_for_review",
+      health: "idle",
+      handoff: { claimed: true, working: true, settled: true },
+      acceptanceTicket: { token: "ticket", revision: 0, inspectedAt: run.updatedAt },
+    }, "health");
+
+    const result = handleCallbackInput(
+      "[HOLISTIC_QUESTION] delegation=d1 pane=p1 token=secret-token question=q1",
+      repo,
+    );
+
+    expect(result.delegation).toMatchObject({
+      state: "working",
+      revision: 1,
+      acceptanceTicket: undefined,
+      handoff: { working: true },
+    });
+  });
+
+  it("settles a handoff after a non-blocking question in the same turn", () => {
+    const repo = repository();
+    const handoff = "[HOLISTIC_HANDOFF_READY] delegation=d1 pane=p1 token=secret-token";
+    reportWorking(repo);
+
+    handleCallbackInput(
+      "[HOLISTIC_QUESTION] delegation=d1 pane=p1 token=secret-token question=q1",
+      repo,
+    );
+    const claimed = handleCallbackInput(handoff, repo);
+    const settled = applyInfrastructureEvent(repo, {
+      event: "pane.agent_status_changed",
+      data: { pane_id: "p1", agent_status: "idle" },
+    });
+
+    expect(claimed.delegation).toMatchObject({
+      state: "working",
+      revision: 1,
+      handoff: { claimed: true, working: true },
+    });
+    expect(settled?.state).toBe("ready_for_review");
+  });
+
   it("moves a blocking question to awaiting_input", () => {
     const result = handleCallbackInput(
       "[HOLISTIC_INPUT_REQUIRED] delegation=d1 pane=p1 token=secret-token question=q2",
@@ -102,10 +157,47 @@ describe("parent/child protocol", () => {
     ).toMatchObject({ matched: true, valid: false, reason: "invalid callback token" });
   });
 
-  it("makes duplicate handoff callbacks idempotent", () => {
+  it("records an early handoff claim but waits for agent_settled", () => {
     const repo = repository();
     const signal = "[HOLISTIC_HANDOFF_READY] delegation=d1 pane=p1 token=secret-token";
-    expect(handleCallbackInput(signal, repo).delegation?.state).toBe("ready_for_review");
-    expect(handleCallbackInput(signal, repo).delegation?.state).toBe("ready_for_review");
+    reportWorking(repo);
+    const claimed = handleCallbackInput(signal, repo);
+    expect(claimed.delegation).toMatchObject({
+      state: "working",
+      handoff: { claimed: true, working: true },
+    });
+    expect(claimed.delegation?.acceptanceTicket).toBeUndefined();
+
+    const settled = applyInfrastructureEvent(repo, {
+      event: "pane.agent_status_changed",
+      data: { pane_id: "p1", agent_status: "idle" },
+    });
+    expect(settled?.state).toBe("ready_for_review");
+  });
+
+  it("makes a handoff reviewable when agent_settled was observed first", () => {
+    const repo = repository();
+    const handoff = "[HOLISTIC_HANDOFF_READY] delegation=d1 pane=p1 token=secret-token";
+
+    reportWorking(repo);
+    expect(applyInfrastructureEvent(repo, {
+      event: "pane.agent_status_changed",
+      data: { pane_id: "p1", agent_status: "idle" },
+    })?.state).toBe("working");
+    expect(handleCallbackInput(handoff, repo).delegation?.state).toBe("ready_for_review");
+  });
+
+  it("makes duplicate handoff and agent_settled status events idempotent", () => {
+    const repo = repository();
+    const handoff = "[HOLISTIC_HANDOFF_READY] delegation=d1 pane=p1 token=secret-token";
+    const settled = {
+      event: "pane.agent_status_changed",
+      data: { pane_id: "p1", agent_status: "idle" },
+    };
+    reportWorking(repo);
+    handleCallbackInput(handoff, repo);
+    applyInfrastructureEvent(repo, settled);
+    expect(handleCallbackInput(handoff, repo).delegation?.state).toBe("ready_for_review");
+    expect(applyInfrastructureEvent(repo, settled)?.state).toBe("ready_for_review");
   });
 });

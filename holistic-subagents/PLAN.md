@@ -62,7 +62,8 @@ sem cleanup:
 prepared → starting → working
                     ↘ awaiting_input → working
                    ↘ ready_for_review → correcting → working
-                                        ↘ accepted
+                                      ↘ working (follow-up)
+                                      ↘ accepted
 qualquer estado ativo → failed
 qualquer estado cancelável → cancelled
 ```
@@ -128,7 +129,9 @@ eventos explícitos do filho:
 - `[HOLISTIC_QUESTION]` → registra uma dúvida não bloqueante e mantém o estado
   atual enquanto o filho continua qualquer trabalho seguro;
 - `[HOLISTIC_INPUT_REQUIRED]` → `awaiting_input`;
-- `[HOLISTIC_HANDOFF_READY]` → `ready_for_review`.
+- `[HOLISTIC_HANDOFF_READY]` → registra a alegação de handoff; a Run só muda
+  para `ready_for_review` quando o status `idle` correspondente confirmar o
+  `agent_settled` do Pi.
 
 Cada pergunta terá um question ID. O texto completo, contexto, opções e impacto
 ficará no pane filho; o sinal curto apenas despertará o pai. Para dúvida não

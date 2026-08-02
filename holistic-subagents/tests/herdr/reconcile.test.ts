@@ -3,9 +3,10 @@ import { describe, expect, it } from "vitest";
 import { DelegationRepository, InMemoryDelegationStore } from "../../src/domain/store.ts";
 import type { Delegation } from "../../src/domain/types.ts";
 import { applyInfrastructureEvent, reconcileSnapshot } from "../../src/herdr/reconcile.ts";
+import { handleCallbackInput } from "../../src/protocol/callback.ts";
 
-function repo(): DelegationRepository {
-  const repository = new DelegationRepository(new InMemoryDelegationStore());
+function repo(store = new InMemoryDelegationStore()): DelegationRepository {
+  const repository = new DelegationRepository(store);
   const delegation: Delegation = {
     version: 2,
     id: "d1",
@@ -61,6 +62,13 @@ function repo(): DelegationRepository {
   return repository;
 }
 
+function reportWorking(repository: DelegationRepository): void {
+  applyInfrastructureEvent(repository, {
+    event: "pane.agent_status_changed",
+    data: { pane_id: "p1", agent_status: "working" },
+  });
+}
+
 describe("Herdr reconciliation", () => {
   it("marks missing active panes as failed and finds orphans", () => {
     const repository = repo();
@@ -86,6 +94,60 @@ describe("Herdr reconciliation", () => {
     });
     expect(updated?.state).toBe("working");
     expect(updated?.health).toBe("idle");
+  });
+
+  it("ignores unknown runtime status values", () => {
+    const repository = repo();
+
+    const updated = applyInfrastructureEvent(repository, {
+      event: "pane.agent_status_changed",
+      data: { pane_id: "p1", agent_status: "paused" },
+    });
+
+    expect(updated).toBeUndefined();
+    expect(repository.get("d1")).toMatchObject({ state: "working", health: undefined });
+  });
+
+  it("promotes a claimed handoff when Pi agent_settled reports idle", () => {
+    const repository = repo();
+    reportWorking(repository);
+    const delegation = repository.get("d1")!;
+    handleCallbackInput(
+      `[HOLISTIC_HANDOFF_READY] delegation=${delegation.id} pane=p1 token=${delegation.callbackToken}`,
+      repository,
+    );
+
+    const updated = applyInfrastructureEvent(repository, {
+      event: "pane.agent_status_changed",
+      data: { pane_id: "p1", agent_status: "idle" },
+    });
+
+    expect(updated).toMatchObject({ state: "ready_for_review", health: "idle" });
+  });
+
+  it("promotes a claimed handoff from an idle reload snapshot", () => {
+    const store = new InMemoryDelegationStore();
+    const repository = repo(store);
+    reportWorking(repository);
+    const delegation = repository.get("d1")!;
+    handleCallbackInput(
+      `[HOLISTIC_HANDOFF_READY] delegation=${delegation.id} pane=p1 token=${delegation.callbackToken}`,
+      repository,
+    );
+    const reloaded = new DelegationRepository(store);
+
+    reconcileSnapshot(reloaded, {
+      protocol: 17,
+      panes: [{
+        pane_id: "p1",
+        workspace_id: "w",
+        tab_id: "t",
+        agent_status: "idle",
+        tokens: { owner: "owner-token" },
+      }],
+    });
+
+    expect(reloaded.get("d1")).toMatchObject({ state: "ready_for_review", health: "idle" });
   });
 
   it("routes warm-pane events only to the Session active Run", () => {

@@ -127,6 +127,57 @@ describe("DelegationService", () => {
     });
   });
 
+  it("does not inspect or ticket a handoff before the child agent settles", async () => {
+    const fixture = service();
+    const delegation = await fixture.value.create(request());
+    const paneId = delegation.resources.find((resource) => resource.kind === "pane")!.id;
+    fixture.value.handleCallbackInput(
+      `[HOLISTIC_HANDOFF_READY] delegation=${delegation.id} pane=${paneId} token=${delegation.callbackToken}`,
+    );
+
+    await expect(fixture.value.inspect(delegation.id)).rejects.toThrow("HANDOFF_CLAIM_PENDING");
+    await expect(fixture.value.manage(delegation.id, "accept")).rejects.toThrow("HANDOFF_CLAIM_PENDING");
+    expect(fixture.repository.get(delegation.id)?.acceptanceTicket).toBeUndefined();
+
+    fixture.value.onInfrastructureEvent({
+      event: "pane.agent_status_changed",
+      data: { pane_id: paneId, agent_status: "idle" },
+    });
+    const inspection = await fixture.value.inspect(delegation.id);
+    expect(inspection).toMatchObject({
+      paneOutput: "handoff evidence",
+      delegation: { state: "ready_for_review" },
+    });
+    expect(inspection.delegation.acceptanceTicket).toBeDefined();
+  });
+
+  it("distinguishes a pending claim, a non-reviewable Run and stale inspection", async () => {
+    const fixture = service();
+    const delegation = await fixture.value.create(request());
+    const paneId = delegation.resources.find((resource) => resource.kind === "pane")!.id;
+
+    await expect(fixture.value.manage(delegation.id, "accept")).rejects.toThrow("RUN_NOT_REVIEWABLE");
+    fixture.value.handleCallbackInput(
+      `[HOLISTIC_HANDOFF_READY] delegation=${delegation.id} pane=${paneId} token=${delegation.callbackToken}`,
+    );
+    await expect(fixture.value.manage(delegation.id, "accept")).rejects.toThrow("HANDOFF_CLAIM_PENDING");
+    fixture.value.onInfrastructureEvent({
+      event: "pane.agent_status_changed",
+      data: { pane_id: paneId, agent_status: "idle" },
+    });
+    await expect(fixture.value.manage(delegation.id, "accept")).rejects.toThrow("STALE_INSPECTION");
+  });
+
+  it("allows working-state monitoring without issuing an acceptance ticket", async () => {
+    const fixture = service();
+    const delegation = await fixture.value.create(request());
+
+    const inspection = await fixture.value.inspect(delegation.id);
+
+    expect(inspection.delegation).toMatchObject({ state: "working" });
+    expect(inspection.delegation.acceptanceTicket).toBeUndefined();
+  });
+
   it("passes verification purpose to model routing", async () => {
     const fixture = service();
     const original = await fixture.value.create(request());
@@ -206,7 +257,7 @@ describe("DelegationService", () => {
     expect(fixture.requestMock).toHaveBeenLastCalledWith(
       "agent.prompt",
       expect.objectContaining({ text: expect.stringContaining(`delegation=${third.id}`) }),
-      expect.anything(),
+      expect.objectContaining({ timeoutMs: 35_000 }),
     );
   });
 
@@ -276,17 +327,89 @@ describe("DelegationService", () => {
     expect(incompatibleThinking.sessionId).not.toBe(first.sessionId);
   });
 
-  it("invalidates acceptance tickets after a correction and rejects terminal send", async () => {
+  it("invalidates acceptance tickets and handoff latches after a correction", async () => {
     const fixture = service();
     const run = await fixture.value.create(request());
-    fixture.repository.save({ ...run, state: "ready_for_review" }, "transition");
+    fixture.repository.save({
+      ...run,
+      state: "ready_for_review",
+      health: "idle",
+      handoff: { claimed: true, working: true, settled: true },
+    }, "transition");
     await fixture.value.inspect(run.id);
-    await fixture.value.send(run.id, "fix it", { correction: true });
-    fixture.repository.save({ ...fixture.value.get(run.id), state: "ready_for_review" }, "transition");
+    fixture.requestMock.mockImplementationOnce(async (method: string) => {
+      expect(method).toBe("agent.prompt");
+      expect(fixture.repository.get(run.id)).toMatchObject({
+        state: "working",
+        health: "working",
+        handoff: undefined,
+      });
+      return { type: "ok" };
+    });
+    const correcting = await fixture.value.send(run.id, "fix it", { correction: true });
+    expect(correcting).toMatchObject({
+      state: "working",
+      health: "working",
+      handoff: { working: true },
+    });
+    const paneId = run.resources.find((resource) => resource.kind === "pane")!.id;
+    const claimed = fixture.value.handleCallbackInput(
+      `[HOLISTIC_HANDOFF_READY] delegation=${run.id} pane=${paneId} token=${run.callbackToken}`,
+    );
+    expect(claimed.delegation?.state).toBe("working");
+    fixture.value.onInfrastructureEvent({
+      event: "pane.agent_status_changed",
+      data: { pane_id: paneId, agent_status: "idle" },
+    });
     await expect(fixture.value.manage(run.id, "accept")).rejects.toThrow("STALE_INSPECTION");
     await fixture.value.inspect(run.id);
     await fixture.value.manage(run.id, "accept");
     await expect(fixture.value.send(run.id, "more")).rejects.toThrow("holistic_create");
+  });
+
+  it("invalidates acceptance tickets and handoff latches after a follow-up", async () => {
+    const fixture = service();
+    const run = await fixture.value.create(request());
+    fixture.repository.save({
+      ...run,
+      state: "ready_for_review",
+      health: "idle",
+      handoff: { claimed: true, working: true, settled: true },
+    }, "transition");
+    await fixture.value.inspect(run.id);
+
+    const followedUp = await fixture.value.send(run.id, "Please add the command output.");
+
+    expect(followedUp).toMatchObject({
+      state: "working",
+      revision: 1,
+      acceptanceTicket: undefined,
+      handoff: { working: true },
+    });
+    expect(fixture.requestMock).toHaveBeenLastCalledWith(
+      "agent.prompt",
+      expect.objectContaining({ wait: { until: ["working"], timeout_ms: 30_000 } }),
+      expect.objectContaining({ timeoutMs: 35_000 }),
+    );
+  });
+
+  it("fails the Run and Session when a pre-dispatch follow-up cannot be confirmed", async () => {
+    const fixture = service();
+    const run = await fixture.value.create(request());
+    fixture.requestMock.mockImplementationOnce(async () => {
+      throw new Error("socket disconnected");
+    });
+
+    await expect(fixture.value.send(run.id, "continue")).rejects.toThrow("socket disconnected");
+    expect(fixture.repository.get(run.id)).toMatchObject({
+      state: "failed",
+      health: "failed",
+      failure: expect.stringContaining("agent.prompt failed after starting revision 1"),
+    });
+    expect(fixture.repository.getSession(run.sessionId)).toMatchObject({
+      state: "failed",
+      activeRunId: undefined,
+    });
   });
 
   it("cleans Session resources after its Run is terminal", async () => {

@@ -1,6 +1,15 @@
-import { isActiveState, transitionDelegation } from "../domain/state-machine.ts";
+import {
+  isActiveState,
+  recordRuntimeStatus,
+  transitionDelegation,
+} from "../domain/state-machine.ts";
 import { DelegationRepository } from "../domain/store.ts";
-import type { Delegation } from "../domain/types.ts";
+import {
+  isAgentRuntimeStatus,
+  type AgentRuntimeStatus,
+  type AgentSession,
+  type Delegation,
+} from "../domain/types.ts";
 import type { HerdrSnapshot, HerdrSubscriptionEvent } from "./client.ts";
 
 export interface ReconciliationResult {
@@ -34,14 +43,15 @@ export function reconcileSnapshot(
         next = transitionDelegation(delegation, "failed", now);
         next = { ...next, failure: "Herdr ownership metadata diverged", health: "ownership_mismatch" };
       } else {
-        next = { ...next, health: pane.agent_status, updatedAt: now };
-        if (delegation.sessionId) {
-          const session = repository.getSession(delegation.sessionId);
-          if (session) repository.saveSession({ ...session, health: pane.agent_status, updatedAt: now }, "health");
-        }
+        next = persistRuntimeStatus(repository, next, pane.agent_status, now);
+        updated.push(next);
+        continue;
       }
     }
-    repository.save(next, next.state === "failed" ? "transition" : "health");
+    repository.save(
+      next,
+      next.state !== delegation.state ? "transition" : "health",
+    );
     if (next.state === "failed" && delegation.sessionId) {
       const session = repository.getSession(delegation.sessionId);
       if (session) repository.saveSession({ ...session, state: "failed", activeRunId: undefined, failure: next.failure, health: next.health, updatedAt: now }, "transition");
@@ -81,12 +91,25 @@ export function applyInfrastructureEvent(
     repository.saveSession({ ...session, state: "failed", failure: failed.failure, health: "exited", activeRunId: undefined, updatedAt: now }, "transition");
     return failed;
   }
-  const status = typeof data.agent_status === "string" ? data.agent_status : undefined;
+  const status = isAgentRuntimeStatus(data.agent_status) ? data.agent_status : undefined;
   if (status) {
-    const updated = { ...delegation, health: status, updatedAt: now };
-    repository.save(updated, "health");
-    repository.saveSession({ ...session, health: status, updatedAt: now }, "health");
-    return updated;
+    return persistRuntimeStatus(repository, delegation, status, now, session);
   }
   return undefined;
+}
+
+function persistRuntimeStatus(
+  repository: DelegationRepository,
+  delegation: Delegation,
+  status: AgentRuntimeStatus,
+  now: string,
+  knownSession?: AgentSession,
+): Delegation {
+  const updated = recordRuntimeStatus(delegation, status, now);
+  repository.save(updated, updated.state !== delegation.state ? "transition" : "health");
+  const session = knownSession ?? repository.getSession(delegation.sessionId);
+  if (session) {
+    repository.saveSession({ ...session, health: status, updatedAt: now }, "health");
+  }
+  return updated;
 }

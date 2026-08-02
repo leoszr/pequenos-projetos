@@ -94,7 +94,8 @@ The child can converse with you:
 - `[HOLISTIC_QUESTION]` keeps it working while a non-blocking callback wakes
   you;
 - `[HOLISTIC_INPUT_REQUIRED]` moves it to `awaiting_input` and ends its turn;
-- `[HOLISTIC_HANDOFF_READY]` moves it to `ready_for_review`.
+- `[HOLISTIC_HANDOFF_READY]` records the handoff claim; the Run moves to
+  `ready_for_review` only after the corresponding `agent_settled` status.
 
 Callbacks are authenticated and transformed into readable parent input. Inspect
 the child once after a signal; the full question/handoff remains in its pane.

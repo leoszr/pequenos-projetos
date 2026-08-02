@@ -21,6 +21,20 @@ export type AgentSessionState =
   | "closed"
   | "failed";
 
+export const AGENT_RUNTIME_STATUSES = [
+  "idle",
+  "working",
+  "blocked",
+  "done",
+  "unknown",
+] as const;
+export type AgentRuntimeStatus = (typeof AGENT_RUNTIME_STATUSES)[number];
+
+export function isAgentRuntimeStatus(value: unknown): value is AgentRuntimeStatus {
+  return typeof value === "string"
+    && (AGENT_RUNTIME_STATUSES as readonly string[]).includes(value);
+}
+
 export const DELEGATION_PURPOSES = ["execution", "verification"] as const;
 export type DelegationPurpose = (typeof DELEGATION_PURPOSES)[number];
 export type DelegationTopology = "pane" | "tab" | "worktree";
@@ -158,6 +172,15 @@ export interface AcceptanceTicket {
   inspectedAt: string;
 }
 
+export interface HandoffCycle {
+  /** The child emitted HOLISTIC_HANDOFF_READY during this cycle. */
+  claimed?: true;
+  /** Herdr observed Pi working during this cycle. */
+  working?: true;
+  /** Herdr observed Pi settle after working during this cycle. */
+  settled?: true;
+}
+
 export interface AgentSession {
   version: typeof STORE_VERSION;
   id: string;
@@ -204,6 +227,7 @@ export interface DelegationRun {
   runtimeCwd?: string;
   health?: string;
   failure?: string;
+  handoff?: HandoffCycle;
   revision: number;
   acceptanceTicket?: AcceptanceTicket;
   createdAt: string;

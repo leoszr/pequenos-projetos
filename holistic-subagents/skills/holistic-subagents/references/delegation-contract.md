@@ -64,8 +64,9 @@ herdr pane run "$HOLISTIC_PARENT_PANE_ID" \
   "[HOLISTIC_HANDOFF_READY] delegation=$HOLISTIC_DELEGATION_ID pane=$HERDR_PANE_ID token=$HOLISTIC_CALLBACK_TOKEN"
 ```
 
-O filho encerra o turno e permanece disponível. O pai usa `holistic_inspect`;
-o sinal não é evidência nem aceite.
+O filho encerra o turno e permanece disponível. O sinal registra apenas a
+alegação; a Run fica revisável depois que `agent_settled` for confirmado. Então
+o pai usa `holistic_inspect`; o sinal não é evidência nem aceite.
 
 ## Follow-up
 

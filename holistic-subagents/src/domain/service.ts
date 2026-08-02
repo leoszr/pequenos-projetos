@@ -19,7 +19,13 @@ import {
   type CommandRunner,
 } from "../security/authority.ts";
 import { DelegationCleanup } from "../security/cleanup.ts";
-import { isActiveState, transitionDelegation } from "./state-machine.ts";
+import {
+  beginHandoffCycle,
+  isActiveState,
+  isHandoffClaimPending,
+  recordRuntimeStatus,
+  transitionDelegation,
+} from "./state-machine.ts";
 import { DelegationRepository } from "./store.ts";
 import {
   STORE_VERSION,
@@ -203,11 +209,12 @@ export class DelegationService {
             runtimeCwd: normalizedRequest.cwd,
             request: { ...delegation.request, cwd: normalizedRequest.cwd },
           }),
-        }, { signal });
-        delegation = {
+          wait: { until: ["working"], timeout_ms: 30_000 },
+        }, { signal, timeoutMs: 35_000 });
+        delegation = recordRuntimeStatus({
           ...transitionDelegation(delegation, "working"),
           health: "working",
-        };
+        }, "working");
         this.#repository.save(delegation, "transition");
         return delegation;
       }
@@ -253,11 +260,11 @@ export class DelegationService {
         },
         signal,
       );
-      delegation = {
+      delegation = recordRuntimeStatus({
         ...transitionDelegation(delegation, "working"),
         health: "working",
         runtimeCwd: launch.cwd,
-      };
+      }, "working");
       session = {
         ...session,
         state: "busy",
@@ -292,6 +299,7 @@ export class DelegationService {
   inspect(id: string, signal?: AbortSignal): Promise<InspectResult> {
     return this.#serialized(id, async () => {
       let delegation = this.get(id);
+      if (isHandoffClaimPending(delegation)) throw handoffClaimPending("inspect");
       const paneId = primaryPaneId(delegation);
       const [paneResult, readResult] = await Promise.all([
         this.#herdr.request<{ pane?: Record<string, unknown> }>(
@@ -319,7 +327,7 @@ export class DelegationService {
       delegation = {
         ...delegation,
         evidence: [...delegation.evidence, { ...audit.evidence, paneOutput }],
-        acceptanceTicket: audit.ok ? {
+        acceptanceTicket: audit.ok && delegation.state === "ready_for_review" ? {
           token: randomBytes(18).toString("base64url"),
           revision: delegation.revision,
           inspectedAt: new Date().toISOString(),
@@ -346,13 +354,7 @@ export class DelegationService {
       }
       if (options.correction && delegation.state === "ready_for_review") {
         delegation = transitionDelegation(delegation, "correcting");
-        this.#repository.save(delegation, "transition");
       }
-      await this.#herdr.request(
-        "agent.prompt",
-        { target: primaryPaneId(delegation), text: message },
-        { signal },
-      );
       const now = new Date().toISOString();
       const questions = delegation.questions.map((question) =>
         options.questionId && question.id === options.questionId
@@ -360,16 +362,35 @@ export class DelegationService {
           : question,
       );
       delegation = {
-        ...delegation,
+        ...beginHandoffCycle(delegation, now),
         questions,
-        revision: delegation.revision + 1,
-        acceptanceTicket: undefined,
         updatedAt: now,
       };
-      if (delegation.state === "awaiting_input" || delegation.state === "correcting") {
-        delegation = transitionDelegation(delegation, "working", now);
-      }
       this.#repository.save(delegation, options.questionId ? "question" : "transition");
+      try {
+        await this.#herdr.request(
+          "agent.prompt",
+          {
+            target: primaryPaneId(delegation),
+            text: message,
+            wait: { until: ["working"], timeout_ms: 30_000 },
+          },
+          { signal, timeoutMs: 35_000 },
+        );
+      } catch (error) {
+        this.#failPromptDispatch(delegation, error);
+        throw error;
+      }
+      delegation = recordRuntimeStatus(this.get(id), "working");
+      this.#repository.save(delegation, "health");
+      const session = this.#repository.getSession(delegation.sessionId);
+      if (session?.activeRunId === delegation.id) {
+        this.#repository.saveSession({
+          ...session,
+          health: "working",
+          updatedAt: delegation.updatedAt,
+        }, "health");
+      }
       return delegation;
     });
   }
@@ -386,6 +407,12 @@ export class DelegationService {
         return delegation;
       }
       if (action === "accept") {
+        if (isHandoffClaimPending(delegation)) throw handoffClaimPending("accept");
+        if (delegation.state !== "ready_for_review") {
+          throw new Error(
+            `RUN_NOT_REVIEWABLE: Run ${id} is ${delegation.state}; wait for a complete handoff`,
+          );
+        }
         if (!delegation.acceptanceTicket
           || delegation.acceptanceTicket.revision !== delegation.revision) {
           throw new Error(
@@ -521,6 +548,30 @@ export class DelegationService {
     }, "transition");
   }
 
+  #failPromptDispatch(run: Delegation, error: unknown): void {
+    const current = this.get(run.id);
+    if (!isActiveState(current.state)) return;
+    const now = new Date().toISOString();
+    const failure = `agent.prompt failed after starting revision ${run.revision}: ${errorMessage(error)}`;
+    const failed = {
+      ...transitionDelegation(current, "failed", now),
+      failure,
+      health: "failed",
+    };
+    this.#repository.save(failed, "transition");
+    const session = this.#repository.getSession(failed.sessionId);
+    if (session?.activeRunId === failed.id) {
+      this.#repository.saveSession({
+        ...session,
+        state: "failed",
+        activeRunId: undefined,
+        health: "failed",
+        failure,
+        updatedAt: now,
+      }, "transition");
+    }
+  }
+
   #fixedModelEligible(
     session: AgentSession,
     request: DelegationRequest,
@@ -598,6 +649,16 @@ function sessionBusy(): Error & { code: string } {
     ),
     { code: "SESSION_BUSY" },
   );
+}
+
+function handoffClaimPending(action: "inspect" | "accept"): Error {
+  return new Error(
+    `HANDOFF_CLAIM_PENDING: Wait for the corresponding child agent_settled event before ${action}ing`,
+  );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function authorityContained(
