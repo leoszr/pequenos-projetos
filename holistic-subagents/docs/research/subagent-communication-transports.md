@@ -51,14 +51,20 @@ Leitura de `src/pi/runtime.ts`, `src/domain/service.ts`, `src/protocol/brief.ts`
   (`timingSafeEqual` sobre o `HOLISTIC_CALLBACK_TOKEN`), além da checagem de
   ownership do pane. Markers: `HOLISTIC_QUESTION`, `HOLISTIC_INPUT_REQUIRED`,
   `HOLISTIC_HANDOFF_READY`.
-- **Estado durável**: `Delegation` e `AgentSession` vivem como entries
+- **Estado durável**: `AgentSession` e `DelegationRun` vivem como entries
   estruturadas no branch da sessão Pi (repository), com máquina de estados
   (`prepared → starting → working → awaiting_input → ready_for_review →
-  accepted/failed/cancelled`), `questions[]`, `evidence[]` (inclui
-  `paneOutput`, snapshot das últimas 240 linhas via `pane.read`).
-- **Artifacts**: arquivos no `cwd`/worktree da delegação; evidência é o
-  `paneOutput` truncado. Não existe barramento de artifacts estruturado; o
-  filho referencia arquivos por caminho no texto do pane.
+  correcting → working → accepted/failed/cancelled`), `questions[]`,
+  `evidence[]` e uma
+  `Session Mutation Sequence` monotônica. `paneOutput` continua sendo apenas
+  diagnóstico (snapshot das últimas 240 linhas via `pane.read`).
+- **Artifacts**: Runs novas usam manifests JSON versionados. O
+  `ArtifactStore` cria roots privados temporários sob `os.tmpdir()` com
+  `mkdtemp`, publica com temp-file + rename atômico e valida containment,
+  symlinks, ownership, permissões, tamanho, media type e SHA-256. O callback
+  carrega somente a identidade e o hash do manifest; `holistic_inspect` lê e
+  valida o manifest e os artifacts. Runs legadas continuam com o fallback do
+  pane.
 
 ---
 
@@ -323,9 +329,11 @@ Achados factuais que qualquer decisão deve considerar:
    sem descrever o mecanismo de observação do mailbox. Filesystem é passivo:
    sem socket/event/watch/poll, escrever um arquivo não acorda o pai. (2, 3.2,
    3.6, 3.8)
-9. **No holistic, parte do "file-like" já existe**: o pai lê evidência do
-   filho via `pane.read` (snapshot de texto), e artifacts reais já são arquivos
-   no cwd/worktree referenciados por caminho na mensagem. (2)
+9. **No holistic, parte do "file-like" é estruturada**: o pai ainda pode ler
+   diagnóstico via `pane.read` (snapshot de texto), mas Runs novas publicam
+   artifacts em roots registrados e os referenciam por `ArtifactRef`; arquivos
+   duráveis continuam no `cwd`/worktree da delegação e são auditados por
+   caminho relativo e baseline Git.
 
 ---
 
@@ -335,7 +343,7 @@ Achados factuais que qualquer decisão deve considerar:
 > factuais estão nas seções 1–5.
 
 **Não mover todas as interações para `/tmp`.** O padrão das fontes primárias e
-a arquitetura atual convergem para um desenho híbrido:
+a arquitetura atual convergem para um desenho híbrido, já implementado:
 
 1. **Control plane e estado durável ficam onde estão**: Herdr socket para
    lifecycle e entries da sessão Pi para o estado da delegação. Estado que
@@ -344,14 +352,14 @@ a arquitetura atual convergem para um desenho híbrido:
    são pequenas, precisam entrar no context do LLM do destinatário e já têm
    autenticação (token) e máquina de estados. Trocar isso por arquivos
    adicionaria polling/locking sem ganho.
-3. **Artifacts grandes: `/tmp` pode ser o data plane — de artifacts
-   descartáveis**: quando a evidência for volumosa (logs longos, diffs,
-   outputs de ferramentas), o filho grava em arquivo temporário e a
-   mensagem/`HANDOFF_READY` carrega só a **referência** (padrão A2A
-   FilePart-URI / Claude artifacts): caminho + tamanho + hash + media type. O
-   `pane.read` truncado (240 linhas) deixa de ser o único canal de evidência.
+3. **Artifacts grandes: `/tmp` é o data plane de artifacts descartáveis**:
+   quando a evidência for volumosa (logs longos, diffs, outputs de
+   ferramentas), o filho grava no root temporário autorizado e o
+   `HANDOFF_READY` carrega só a **referência** (ID + tamanho + hash + media
+   type). O `pane.read` truncado (240 linhas) não é mais o único canal de
+   evidência. O limite padrão é 8 MiB por artifact e 64 MiB por root.
 4. **Criação dos temporários com as APIs nativas, sem caminho previsível**:
-   `os.tmpdir()` + `fs.mkdtemp()` por delegação (diretório único e não
+   `os.tmpdir()` + `fs.mkdtemp()` por Session (diretório único e não
    previsível, modo 0700), arquivos 0600, escrita via temp + rename atômico e
    cleanup do diretório no `cleanup` da delegação. **Não** usar um diretório
    fixo tipo `${TMPDIR}/holistic-<id>` — caminho previsível é anti-padrão
@@ -371,7 +379,7 @@ a arquitetura atual convergem para um desenho híbrido:
    — FHS e systemd-tmpfiles). Preferir o worktree/`cwd` da delegação quando o
    artifact precisar sobreviver à sessão.
 
-**Risco/incerteza a validar**: a robustez do padrão "caminho na mensagem"
-depende de o pai conseguir ler o arquivo (mesmo host/filesystem, hoje garantido
-por panes locais; quebraria se topologias remotas aparecerem). Limite de
-evidência por tamanho, não só por linhas, seria a próxima mudança natural.
+**Risco/incerteza remanescente**: a robustez do root local depende de pai e
+filho compartilharem host/filesystem, hoje garantido pelas panes locais; o
+desenho precisará mudar se topologias remotas aparecerem. O protocolo atual
+usa IDs opacos de artifacts, não URIs remotas.

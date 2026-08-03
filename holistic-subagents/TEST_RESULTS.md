@@ -1,28 +1,34 @@
 # Resultados de teste
 
-## Compatibilidade Herdr 0.7.5
+## Verificação automatizada atual
 
-Auditoria em 2026-07-21 contra o CLI/schema local (protocol 17), documentação
-oficial e release v0.7.5. O fluxo real `pane.split -> agent.start ->
-agent.prompt` iniciou Pi, observou `working` e removeu o pane criado. A suíte
-automatizada completa também passou após a migração.
+Data: 2026-08-03
 
-Data: 2026-07-20
+- `npm run typecheck`: passou;
+- `npm test`: 18 arquivos, 135 testes, todos passaram;
+- `python scripts/validate.py`: passou para manifest híbrido, links, três
+  callbacks, Herdr schema/protocol e três modelos da política padrão;
+- `npm pack --dry-run`: 32 arquivos publicados, sem `node_modules`;
+- `npm audit --omit=dev`: nenhuma vulnerabilidade de runtime.
 
-Ambiente: Pi 0.80.x, Herdr 0.7.4/protocol 16, repositório Git real e sessões Pi
+## Auditoria histórica de compatibilidade: Herdr 0.7.5 / protocol 17
+
+Auditoria registrada em 2026-07-21 contra o CLI/schema local (protocol 17),
+documentação oficial e release v0.7.5. O fluxo real
+`pane.split -> agent.start -> agent.prompt` iniciou Pi, observou `working` e
+removeu o pane criado.
+
+Os E2E abaixo são registros históricos da migração. A execução ocorreu no
+ambiente informado e não substitui a verificação automatizada atual.
+
+Ambiente dos E2E: Pi 0.80.x, Herdr 0.7.4/protocol 16, repositório Git real e sessões Pi
 interativas sem foco. Todos os panes, tabs, workspaces e worktrees criados pelo
 E2E foram removidos ao final.
 
-## Automação
+## Automação histórica da migração
 
-- `npm run typecheck`: passou;
-- `npm test`: 14 arquivos, 58 testes, todos passaram;
 - cobertura exercitada: state machine, event log, socket NDJSON, topologias,
   resolver, callbacks, reconciliação, autoridade, cleanup e service;
-- `python scripts/validate.py`: passou para manifest híbrido, links, três
-  callbacks, Herdr schema/protocol e três modelos da política padrão;
-- `npm pack --dry-run`: 28 arquivos de runtime/documentação, sem `node_modules`;
-- `npm audit --omit=dev`: nenhuma vulnerabilidade de runtime.
 
 ## Socket Herdr real
 
