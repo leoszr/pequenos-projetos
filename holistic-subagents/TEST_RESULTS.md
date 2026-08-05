@@ -3,6 +3,71 @@
 Este arquivo é um ledger, não uma garantia de que os comandos foram executados
 no checkout atual. Cada registro informa SHA, data e ambiente conhecido.
 
+## Etapa 3 — SMOKE FINAL aprovado (d8bfb5be)
+
+- **Data:** 2026-08-05T18:45–18:58Z
+- **SHA:** `d8bfb5be5796afc1166cee87515fa06f4a27b0cd` (tree limpa)
+- **Ambiente:** Node `v24.16.0`; Pi `0.83.0`; Herdr `0.8.0`, **protocol 19**
+  (server running, compatible: yes).
+- **Carregamento:** harness real Herdr no workspace `w3M` — tab `w3M:tV`,
+  pane `w3M:pY`, agente `coord-d8bf`; env `HERDR_ENV=1`,
+  `HOLISTIC_SUBAGENT_DEPTH=` (vazio), `PI_OFFLINE=1`; comando:
+  `pi --no-extensions -e ./extensions/holistic-subagents.ts --no-skills
+  --skill ./skills/holistic-subagents`; `/holistic-mode on` → subagents: on;
+  5 tools confirmadas (`holistic_create`, `holistic_list`, `holistic_inspect`,
+  `holistic_send`, `holistic_manage`).
+- **Run única (sem retry/reentrega):** `smoke-d8bfb5be`
+  (`17e74adc-b6f4-4545-9464-b3e082adc8ac`), child
+  `openai-codex/gpt-5.6-luna` effort auto→xhigh, topology tab (`w3M:tW`),
+  artifact root `/tmp/holistic-c9a94e09-cc18-4ee9-8c42-f6f960584a00-wz2bD5`.
+
+### Critérios, evidência (timestamps UTC do ledger) e resultado
+
+| # | Critério | Evidência | Resultado |
+|---|----------|-----------|-----------|
+| 1 | create/working | `created` 18:45:44.893Z; `transition/working` 18:46:03.403Z | PASS |
+| 2 | claim gravado antes de settled | `claimed=true` 18:46:54.293Z com `settled` vazio (health/working) | PASS |
+| 3 | `/reload` real com claim pendente + recovery | `herdr pane run w3M:pY '/reload'` 18:47:04Z → "Reloaded keybindings, extensions, skills, prompts, themes, and context files" (claim pendente, notificação "Aguardando agent_settled." na tela); pós-reload `holistic_list` 18:47:21Z mostra a run `working`; o `done` posterior (18:48:59Z) assentou com claim+ciclo preservados | PASS |
+| 4 | done assenta e run vira ready_for_review | `health` 18:48:59.894Z: `state=ready_for_review`, `claimed=true`, `working=true`, `settled=true` | PASS |
+| 5 | `holistic_inspect` válido | 18:56:09Z: run `ready_for_review`, **AcceptanceTicket emitido**, `audit.ok=true`, manifest válido; artifact `8c1d0f6e…` text/plain 17 bytes `sha256:7dec1fe1…` conferido | PASS |
+| 6 | `holistic_manage accept` | 18:56:43.020Z: run `accepted` | PASS |
+| 7 | cleanup integrado da tab/root | 18:57:59.9Z: sessão `closing→closed` com `removedAt` (18:57:59.947Z/.970Z/.986Z); tab do child `w3M:tW` e root `/tmp/holistic-c9a94e09…` removidos pelo ciclo; nenhum fechamento direto de tab/root do child | PASS |
+
+### Comandos principais (ordem de execução)
+
+```text
+herdr tab create --workspace w3M --cwd …/holistic-subagents --label smoke-d8bfb5be
+  --env HERDR_ENV=1 --env HOLISTIC_SUBAGENT_DEPTH= --env PI_OFFLINE=1
+herdr agent start coord-d8bf --kind pi --pane w3M:pY --
+  pi --no-extensions -e ./extensions/holistic-subagents.ts --no-skills
+  --skill ./skills/holistic-subagents
+herdr pane run w3M:pY '/holistic-mode on'
+herdr agent prompt coord-d8bf '…holistic_create (name smoke-d8bfb5be, bounded,
+  missão: artifact smoke.txt + manifest + [HOLISTIC_HANDOFF_READY] + sleep 120)…'
+herdr pane run w3M:pY '/reload'                                  # critério 3
+herdr agent prompt coord-d8bf '…holistic_list / holistic_inspect / holistic_manage accept|close…'
+herdr tab close w3M:tV                                          # harness (não é evidência do critério 7)
+```
+
+### Observações e limitações
+
+- A missão mínima determinística exigiu 4 correções via `holistic_send`
+  (ciclos 2–5): o child publicou o manifest fora da árvore esperada
+  (`<root>/<runId>/<cycleId>/<manifestId>`), com permissão 0755 (exigido 0700),
+  com nomes de arquivo não-opacos e com schema `files[]`/`commits[]`
+  incorreto. Em cada violação o sistema rejeitou (fail closed) e a correção
+  gerou novo ciclo claim→settle→ready_for_review — fluxo de correção validado
+  incidentalmente. Limitação: o child Luna não seguiu o schema do brief à
+  risca; a missão mínima não era auto-suficiente em conformidade de protocolo.
+- `/reload` real executado com o claim pendente (antes do settled); o recovery
+  manteve run/ciclo/claim e o assentamento `done` pós-reload ocorreu
+  normalmente (correção `d8bfb5be`).
+- Harness encerrado ao final; instalação persistente intacta
+  (`5be88384…`); temporários próprios (`/tmp/smoke-mission-*.txt`) removidos;
+  sem commit/push; sem `/compact`.
+- **Resultado: ETAPA 3 CONCLUÍDA — todos os critérios passaram; `PLAN.md`
+  zerado.**
+
 ## Verificação automatizada — snapshot do núcleo atual
 
 - **SHA:** `17464b13475df6f6adfd5d813ea32cb57dd85bee`
