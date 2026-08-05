@@ -9,6 +9,7 @@ import {
   DelegationRepository,
   InMemoryDelegationStore,
 } from "../../src/domain/store.ts";
+import { captureAuthorityBaseline } from "../../src/security/authority.ts";
 import type { AgentSession, Delegation } from "../../src/domain/types.ts";
 import {
   serializeManifest,
@@ -112,12 +113,17 @@ async function fixture(store = new InMemoryDelegationStore()): Promise<Fixture> 
   const artifacts = new ArtifactStore();
   const requestMock = vi.fn(async () => ({ type: "ok", pane: { agent_status: "idle" } }));
   const runner = {
-    run: vi.fn(async () => ({ stdout: "", stderr: "", code: 0 })),
+    run: vi.fn(async (_command: string, args: string[]) => ({
+      stdout: args[0] === "rev-parse" ? "/repo\n" : "",
+      stderr: "",
+      code: 0,
+    })),
   };
   const cycle = new HandoffCycle({ repository, mutations, herdr: { request: requestMock } as never, artifacts, runner });
   const root = await artifacts.createRoot("holistic-test");
   rootPaths.push(root.path);
-  const run = delegation();
+  const authorityBaseline = await captureAuthorityBaseline(runner, "/repo");
+  const run = { ...delegation(), authorityBaseline };
   if (repository.listSessions().length === 0) {
     repository.saveSession(session(run, root), "created");
     repository.save(run, "created");
@@ -835,6 +841,19 @@ describe("HandoffCycle > audit and acceptance", () => {
     expect(inspection.audit.ok).toBe(false);
     expect(inspection.delegation.acceptanceTicket).toBeUndefined();
     expect(() => fx.cycle.accept(run.id)).toThrow("STALE_INSPECTION");
+  });
+
+  it("fails closed when the run has no captured authority baseline", async () => {
+    const fx = await fixture();
+    const run = await markReviewable(fx, fx.run);
+    fx.repository.save({ ...run, authorityBaseline: undefined }, "transition");
+
+    const inspection = await fx.cycle.inspect(run.id);
+    expect(inspection.audit.ok).toBe(false);
+    expect(inspection.audit.violations).toEqual([
+      "authority baseline invalid: no authority baseline captured before delegation",
+    ]);
+    expect(inspection.delegation.acceptanceTicket).toBeUndefined();
   });
 
   it("blocks acceptance while a reviewer is pending", async () => {

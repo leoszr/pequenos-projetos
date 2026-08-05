@@ -420,6 +420,8 @@ export class HandoffCycle {
         const paneId = primaryPaneId(run);
         const baseline = run.authorityBaseline ?? {
           capturedAt: run.createdAt,
+          valid: false,
+          invalidReason: "no authority baseline captured before delegation",
           statusLines: [],
         };
         const panePromise = this.#herdr.request<{ pane?: Record<string, unknown> }>(

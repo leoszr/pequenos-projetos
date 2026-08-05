@@ -40,6 +40,32 @@ evidências da auditoria.
   sem retry automático.
 - Smoke da Etapa 3 ainda não repetido; pendente revisão desta rodada.
 
+### Rodada 4 — correções de authority (implementadas)
+
+- Coleta Git do baseline/auditoria falha fechado quando `code != 0` (status,
+  diff, diff --cached, hash-object e comandos auxiliares); baseline inválido
+  bloqueia o aceite com diagnóstico.
+- HEAD capturado no baseline; mudança de HEAD/história reprova a auditoria
+  mesmo quando um commit restaura o status.
+- `git status --porcelain=v1 -z` com parser NUL-aware para rename/copy e
+  nomes com " -> ", espaços, aspas ou caracteres especiais, sem consultar
+  paths fictícios.
+- Detecção preservada de staged/unstaged/untracked/deletion/rename e de
+  arquivo já sujo alterado novamente.
+- Regressões em `tests/security/authority.test.ts`, com fixture real Git
+  apenas para parser/HEAD; typecheck e `git diff --check` limpos.
+
+### Rodada 5 — contrato de baseline confiável (implementadas, aguardando revalidação)
+
+- Baseline só é confiável com `valid: true` explícito + campos obrigatórios do
+  contrato (gitRoot, head, statusLines, pathEvidence); baseline ausente,
+  legado ou incompleto é rejeitado fail-closed com diagnóstico.
+- Fallback de `inspect` em `handoff-cycle.ts` para `authorityBaseline` ausente
+  agora é baseline explicitamente inválido com diagnóstico, nunca um baseline
+  vazio aparentemente aceitável.
+- Corrigido em `authority.test.ts` e `handoff-cycle.test.ts` sem rodar a
+  suíte completa; validação final ainda pendente na revisão.
+
 ## Etapa 4 — Economizar o processo de handoff
 
 - Proibir mensagens pós-handoff sem correção real.

@@ -167,6 +167,14 @@ export interface AuthorityBaseline {
   gitRoot?: string;
   head?: string;
   statusLines: string[];
+  pathEvidence?: Record<string, string>;
+  /**
+   * Trust contract: a baseline is only reliable when explicitly valid:true
+   * AND carries gitRoot, head, statusLines and pathEvidence. Missing, legacy
+   * or incomplete baselines are rejected fail-closed by auditAuthority.
+   */
+  valid?: boolean;
+  invalidReason?: string;
 }
 
 export interface AcceptanceTicket {
