@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Delegation } from "../../src/domain/types.ts";
-import { buildDelegationBrief } from "../../src/protocol/brief.ts";
+import { buildDelegationBrief, buildFollowUpPrompt } from "../../src/protocol/brief.ts";
 
 function delegation(): Delegation {
   return {
@@ -45,5 +45,12 @@ describe("delegation brief", () => {
     expect(brief).toContain("HOLISTIC_QUESTION");
     expect(brief).toContain("HOLISTIC_INPUT_REQUIRED");
     expect(brief).toContain("HOLISTIC_HANDOFF_READY");
+  });
+
+  it("fails explicitly before producing an inconsistent follow-up", () => {
+    expect(() => buildFollowUpPrompt({ ...delegation(), handoff: undefined }, "Continue"))
+      .toThrow("MISSING_HANDOFF_CYCLE: Delegation d1");
+    expect(() => buildDelegationBrief({ ...delegation(), handoff: undefined }))
+      .toThrow("MISSING_HANDOFF_CYCLE: Delegation d1");
   });
 });

@@ -22,6 +22,7 @@ export function buildDelegationBrief(
   delegation: Delegation,
   artifactRoot?: ArtifactRootRegistration,
 ): string {
+  const cycleId = requireHandoffCycle(delegation);
   const request = delegation.request;
   return [
     "You are an auxiliary Pi session created by the main agent for one bounded task.",
@@ -48,7 +49,7 @@ export function buildDelegationBrief(
     ...request.acceptanceEvidence.map((item) => `- ${item}`),
     "",
     "## Return",
-    ...(artifactRoot ? structuredHandoffInstructions(delegation, artifactRoot) : [
+    ...(artifactRoot ? structuredHandoffInstructions(delegation, artifactRoot, cycleId) : [
       "Return result, evidence and exact commands, changed files or commits, and uncertainties/risks.",
     ]),
     "Remain available in this session for questions and corrections.",
@@ -76,12 +77,13 @@ export function buildFollowUpPrompt(
   message: string,
   artifactRoot?: ArtifactRootRegistration,
 ): string {
+  const cycleId = requireHandoffCycle(delegation);
   return [
     message,
     "",
-    `Current handoff cycle: ${delegation.handoff?.id ?? "legacy"}`,
+    `Current handoff cycle: ${cycleId}`,
     artifactRoot
-      ? `Publish this cycle's manifest atomically under ${artifactRoot.path}/${delegation.id}/${delegation.handoff?.id}/ and signal it with:`
+      ? `Publish this cycle's manifest atomically under ${artifactRoot.path}/${delegation.id}/${cycleId}/ and signal it with:`
       : "When complete, signal the parent with:",
     callbackCommand(
       delegation,
@@ -95,8 +97,14 @@ export function buildFollowUpPrompt(
   ].join("\n");
 }
 
+function requireHandoffCycle(delegation: Delegation): string {
+  const cycleId = delegation.handoff?.id;
+  if (!cycleId) throw new Error(`MISSING_HANDOFF_CYCLE: Delegation ${delegation.id}`);
+  return cycleId;
+}
+
 function callbackCommand(delegation: Delegation, marker: string, extra = ""): string {
-  const cycle = delegation.handoff?.id ? ` cycle=${delegation.handoff.id}` : "";
+  const cycle = ` cycle=${requireHandoffCycle(delegation)}`;
   const suffix = extra ? ` ${extra}` : "";
   return [
     "```bash",
@@ -108,8 +116,8 @@ function callbackCommand(delegation: Delegation, marker: string, extra = ""): st
 function structuredHandoffInstructions(
   delegation: Delegation,
   root: ArtifactRootRegistration,
+  cycleId: string,
 ): string[] {
-  const cycleId = delegation.handoff?.id ?? "missing-cycle";
   return [
     "Publish a structured handoff manifest; pane transcript is diagnostic only.",
     `- authorized temporary artifact root: ${root.path}`,

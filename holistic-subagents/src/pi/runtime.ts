@@ -5,9 +5,11 @@ import type {
 
 import { DelegationService } from "../domain/service.ts";
 import { isActiveState } from "../domain/state-machine.ts";
+import { isAgentRuntimeStatus } from "../domain/types.ts";
 import { DelegationRepository, PiSessionDelegationStore } from "../domain/store.ts";
 import type { SessionEntryLike } from "../domain/types.ts";
-import { HerdrClient } from "../herdr/client.ts";
+import { HerdrClient, type HerdrSubscriptionEvent } from "../herdr/client.ts";
+import type { HerdrSnapshot } from "../herdr/client.ts";
 import type { AvailableModel, ModelPolicyResolver } from "../models/policy.ts";
 import type { CommandRunner } from "../security/authority.ts";
 
@@ -16,6 +18,31 @@ export interface CoordinatorRuntime {
   client: HerdrClient;
   syncSubscriptions(): Promise<void>;
   close(): void;
+}
+
+export function createInfrastructureEventHandler(
+  service: Pick<DelegationService, "onInfrastructureEvent">,
+  ctx: { ui: Pick<ExtensionContext["ui"], "notify"> },
+  onChange: () => void,
+): (event: HerdrSubscriptionEvent) => Promise<void> {
+  return async (event) => {
+    try {
+      await service.onInfrastructureEvent(event);
+      onChange();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`Holistic infrastructure event rejected: ${reason}`, "error");
+    }
+  };
+}
+
+function isSafeReconciliationSnapshot(snapshot: HerdrSnapshot): boolean {
+  return Array.isArray(snapshot.panes)
+    && snapshot.panes.every((pane) =>
+      typeof pane?.pane_id === "string"
+      && pane.pane_id.length > 0
+      && isAgentRuntimeStatus(pane.agent_status),
+    );
 }
 
 export async function createCoordinatorRuntime(
@@ -55,7 +82,11 @@ export async function createCoordinatorRuntime(
     modelPolicy,
   });
   const snapshot = await client.connect();
+  if (!isSafeReconciliationSnapshot(snapshot)) {
+    throw new Error("Herdr snapshot is incomplete; coordinator runtime was not reconciled");
+  }
   service.reconcile(snapshot);
+  const handleEvent = createInfrastructureEventHandler(service, ctx, onChange);
   const unsubscribers = new Map<string, () => void>();
   const runtime: CoordinatorRuntime = {
     service,
@@ -82,7 +113,7 @@ export async function createCoordinatorRuntime(
         const unsubscribe = await client.subscribe(
           [{ type: "pane.agent_status_changed", pane_id: paneId }],
           (event) => {
-            void service.onInfrastructureEvent(event).then(() => onChange()).catch(() => undefined);
+            void handleEvent(event);
           },
         );
         unsubscribers.set(paneId, unsubscribe);
