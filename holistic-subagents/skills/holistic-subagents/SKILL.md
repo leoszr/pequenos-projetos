@@ -22,14 +22,11 @@ diagnosis or explicit manual fallback.
 
 ## Decide autonomously
 
-Delegate when independent work can proceed in parallel, investigation would
-pollute the main context, a persistent correction loop is useful, or an
-independent check materially reduces risk. Do not delegate trivial work,
-tightly coupled edits, unobservable missions, or work whose brief costs as much
-as direct execution.
-
-Do not ask routine permission to delegate. Ask the user for ambiguous product
-choices, credentials, irreversible actions, or risk you cannot safely resolve.
+Follow the delegation guidance in the active system prompt (units, parallelism,
+small tasks). Do not delegate tightly coupled edits, unobservable missions, or
+work whose brief costs as much as direct execution. Do not ask routine
+permission to delegate; ask the user for ambiguous product choices, credentials,
+irreversible actions, or risk you cannot safely resolve.
 
 ## Define one delegation
 
@@ -52,18 +49,15 @@ for mutation or cleanup.
 
 ### Shape the work first
 
-Do not delegate a trivial local step. Decompose by dependency and ownership:
+Decompose by dependency and ownership:
 
-- run independent, non-overlapping investigations in parallel;
 - run dependent plan → implementation → review work in phases;
 - never assign concurrent mutation of the same paths;
 - give each child a distinct objective, boundary, evidence and return shape;
 - keep synthesis, conflict resolution and final acceptance with the parent.
 
-Start with the fewest children that create real parallelism. Add an independent
-reviewer when failure cost or uncertainty justifies the extra call. Read
-[references/task-distribution.md](references/task-distribution.md) for the full
-heuristic.
+Read [references/task-distribution.md](references/task-distribution.md) for the
+full heuristic.
 
 ### Capability and reasoning
 
@@ -86,11 +80,11 @@ independence and degraded fallback.
 1. Call `holistic_create` with the complete delegation request.
 2. If only degraded capability exists, proceed only after explicitly deciding
    that the lower capability is acceptable and retrying with opt-in.
-3. Confirm the returned state is `working`; then stop active supervision.
-4. Continue independent parent work or end the turn. Do not poll panes,
-   processes, files, tool sessions, or status.
-5. Reuse `holistic_send` for answers, focused follow-ups and corrections.
-6. Use `holistic_list` only when a current summary is needed, not as polling.
+3. Confirm the returned state is `working`, then end your turn or continue
+   independent parent work; the active system prompt governs callbacks and
+   post-handoff messages.
+4. Reuse `holistic_send` for answers and focused follow-ups; use
+   `holistic_list` only when a current summary is needed.
 
 The child can converse with you:
 

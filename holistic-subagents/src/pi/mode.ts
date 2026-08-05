@@ -18,6 +18,21 @@ const HOLISTIC_TOOL_NAME_SET = new Set<string>(HOLISTIC_TOOL_NAMES);
 const MODE_ENTRY_TYPE = "holistic-mode";
 const SKILL_NAME = "holistic-subagents";
 
+const SUBAGENT_GUIDANCE_SECTION = `# Uso de subagentes
+
+- Trabalho substancial usa uma unidade numa tab (worker executa; reviewer independente revisa).
+- Outra unidade em outra tab somente para frente independente e paralela.
+- Tarefa pequena fica no agente principal.
+
+# Contexto e comunicação
+
+- Callbacks sem polling.
+- Continuação próxima da mesma task reutiliza sessão sem compactar.
+- Mesma task com contexto materialmente diferente usa /compact.
+- Mudança de task encerra o Pi e inicia nova sessão no mesmo pane com política de modelos vigente.
+- Briefs, handoffs e outputs concisos.
+- Após handoff, nova mensagem somente para correção real.`;
+
 interface ModeEntryData {
   enabled: boolean;
 }
@@ -104,7 +119,11 @@ export function registerHolisticMode(pi: ExtensionAPI): HolisticModeController {
   pi.on("session_tree", async (_event, ctx) => restore(ctx));
 
   pi.on("before_agent_start", async (event) => {
-    if (enabled) return;
+    if (enabled) {
+      return {
+        systemPrompt: appendSubagentGuidance(event.systemPrompt),
+      };
+    }
     return {
       systemPrompt: removeHolisticSkill(event.systemPrompt, event.systemPromptOptions),
     };
@@ -126,6 +145,12 @@ export function registerHolisticMode(pi: ExtensionAPI): HolisticModeController {
       applyToolAvailability();
     },
   };
+}
+
+export function appendSubagentGuidance(systemPrompt: string): string {
+  return systemPrompt.includes(SUBAGENT_GUIDANCE_SECTION)
+    ? systemPrompt
+    : `${systemPrompt}\n\n${SUBAGENT_GUIDANCE_SECTION}`;
 }
 
 export function removeHolisticSkill(
