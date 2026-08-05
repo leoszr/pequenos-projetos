@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita
+Parcialmente superada pela ADR 0004
 
 ## Contexto
 
@@ -27,7 +27,8 @@ autoridade.
 `holistic_inspect` valida manifest, artifacts, runtime e autoridade antes de
 emitir um Acceptance Ticket vinculado ao ciclo, revisão, Session Mutation
 Sequence e hash. Runs legadas continuam inspecionáveis pelo pane; Runs novas
-nunca usam transcript para contornar manifest ausente ou inválido.
+nunca usam transcript para contornar manifest ausente ou inválido. A
+compatibilidade legada desta frase foi posteriormente removida pela ADR 0004.
 
 ## Consequências
 

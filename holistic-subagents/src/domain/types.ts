@@ -1,16 +1,7 @@
-import {
-  HANDOFF_PROTOCOL_VERSION as CURRENT_HANDOFF_PROTOCOL_VERSION,
-  type HandoffManifest,
-} from "../protocol/handoff.ts";
+import type { HandoffManifest } from "../protocol/handoff.ts";
 
 export const STORE_VERSION = 2 as const;
 export const STORE_CUSTOM_TYPE = "holistic-delegation-v2";
-export const LEGACY_STORE_CUSTOM_TYPE = "holistic-delegation-v1";
-export const LEGACY_HANDOFF_PROTOCOL_VERSION = 0 as const;
-export const HANDOFF_PROTOCOL_VERSION = CURRENT_HANDOFF_PROTOCOL_VERSION;
-export type HandoffProtocolVersion =
-  | typeof LEGACY_HANDOFF_PROTOCOL_VERSION
-  | typeof HANDOFF_PROTOCOL_VERSION;
 
 export type RunState =
   | "prepared"
@@ -223,8 +214,6 @@ export interface AgentSession {
   /** Monotonic version for every persisted Session/active-Run mutation. */
   mutationSequence: number;
   activeRunId?: string;
-  /** Migrated v1 Sessions are inspectable/cleanable but never reusable. */
-  sealed?: boolean;
   trustScope: string;
   authorityCeiling: AuthorityPolicy;
   modelResolution: ModelResolution;
@@ -242,6 +231,27 @@ export interface AgentSession {
   lastUsedAt: string;
 }
 
+/** The single disposable data-plane root of a Session (ownership on the Session). */
+export function temporaryArtifactRoot(
+  session: AgentSession,
+): ArtifactRootRegistration | undefined {
+  return session.artifactRoots.find((root) => !root.durable && !root.removedAt);
+}
+
+/** Upserts a resource into a Session, replacing any prior resource of the same kind and id. */
+export function upsertSessionResource(
+  session: AgentSession,
+  resource: DelegationResource,
+): AgentSession {
+  const resources = [...session.resources];
+  const index = resources.findIndex(
+    (item) => item.kind === resource.kind && item.id === resource.id,
+  );
+  if (index < 0) resources.push(resource);
+  else resources[index] = resource;
+  return { ...session, resources, updatedAt: new Date().toISOString() };
+}
+
 export interface DelegationRun {
   version: typeof STORE_VERSION;
   id: string;
@@ -249,7 +259,6 @@ export interface DelegationRun {
   parentSessionId: string;
   parentPaneId: string;
   callbackToken: string;
-  handoffProtocolVersion?: HandoffProtocolVersion;
   state: RunState;
   request: DelegationRequest;
   purpose: DelegationPurpose;

@@ -80,8 +80,8 @@ herdr pane run "$HOLISTIC_PARENT_PANE_ID" \
 O filho encerra o turno e permanece disponível. O sinal registra apenas a
 alegação. Claim, trabalho observado e `agent_settled` do mesmo ciclo podem
 chegar em qualquer ordem. A Run só fica revisável após os três. Então o pai usa
-`holistic_inspect`, que valida manifest, artifacts e autoridade; o transcript é
-somente fallback para Runs legadas.
+`holistic_inspect`, que valida manifest, artifacts e autoridade; não há fallback
+por transcript.
 
 ## Follow-up
 

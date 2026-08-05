@@ -2,11 +2,6 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { ArtifactStore, ArtifactStoreError } from "../artifacts/store.ts";
-import {
-  applyInfrastructureEvent,
-  reconcileSnapshot,
-  reduceInfrastructureEvent,
-} from "../herdr/reconcile.ts";
 import type { HerdrClient, HerdrSnapshot, HerdrSubscriptionEvent } from "../herdr/client.ts";
 import { HerdrTopologyManager, type LaunchSpec } from "../herdr/topologies.ts";
 import {
@@ -16,44 +11,36 @@ import {
 import type { AvailableModel, ModelPolicyResolver } from "../models/policy.ts";
 import {
   buildDelegationBrief,
-  buildFollowUpPrompt,
   normalizeDelegationRequest,
   validateDelegationRequest,
 } from "../protocol/brief.ts";
-import { parseManifest, type HandoffManifest } from "../protocol/handoff.ts";
-import {
-  handleCallbackInput,
-  parseCallback,
-  type CallbackHandlingResult,
-} from "../protocol/callback.ts";
 import {
   assertAuthorityPreconditions,
-  auditAuthority,
   captureAuthorityBaseline,
-  type AuthorityAudit,
   type CommandRunner,
 } from "../security/authority.ts";
 import { DelegationCleanup } from "../security/cleanup.ts";
 import {
-  beginHandoffCycle,
+  HandoffCycle,
+  type CallbackHandlingResult,
+  type InspectResult,
+  type ReconciliationResult,
+} from "./handoff-cycle.ts";
+import {
   isActiveState,
-  isHandoffClaimPending,
-  recordRuntimeStatus,
   transitionDelegation,
 } from "./state-machine.ts";
 import { DelegationRepository } from "./store.ts";
 import { SessionMutations } from "./session-mutations.ts";
 import {
-  HANDOFF_PROTOCOL_VERSION,
-  LEGACY_HANDOFF_PROTOCOL_VERSION,
   STORE_VERSION,
+  temporaryArtifactRoot,
+  upsertSessionResource,
   type AgentSession,
   type ArtifactRootRegistration,
   type Delegation,
   type DelegationRequest,
-  type DelegationResource,
   type RuntimeIdentity,
-  isAgentRuntimeStatus,
 } from "./types.ts";
 
 export interface CoordinatorIdentity extends RuntimeIdentity {
@@ -61,14 +48,9 @@ export interface CoordinatorIdentity extends RuntimeIdentity {
   parentTabId: string;
 }
 
-export interface InspectResult {
-  delegation: Delegation;
-  paneOutput: string;
-  audit: AuthorityAudit;
-  pane: Record<string, unknown> | undefined;
-}
-
 export type ManageAction = "focus" | "accept" | "fail" | "close" | "cleanup";
+
+export type { CallbackHandlingResult, InspectResult, ReconciliationResult } from "./handoff-cycle.ts";
 
 const SHARED_TAB_POOL_QUEUE = "__holistic_shared_tab_pool__";
 
@@ -80,6 +62,7 @@ export class DelegationService {
   readonly #cleanup: DelegationCleanup;
   readonly #artifacts: ArtifactStore;
   readonly #runner: CommandRunner;
+  readonly #cycles: HandoffCycle;
   readonly #identity: CoordinatorIdentity;
   readonly #availableModels: () => AvailableModel[];
   readonly #modelPolicy: ModelPolicyResolver;
@@ -103,6 +86,13 @@ export class DelegationService {
     this.#topologies = new HerdrTopologyManager(options.herdr);
     this.#cleanup = new DelegationCleanup(options.herdr, options.runner);
     this.#artifacts = new ArtifactStore();
+    this.#cycles = new HandoffCycle({
+      repository: options.repository,
+      mutations: this.#mutations,
+      herdr: options.herdr,
+      artifacts: this.#artifacts,
+      runner: options.runner,
+    });
   }
 
   list(): Delegation[] {
@@ -134,8 +124,7 @@ export class DelegationService {
     const now = new Date().toISOString();
     const runId = randomUUID();
     const compatible = normalizedRequest.requiresCleanContext ? undefined : this.#repository.listSessions()
-      .filter((session) => !session.sealed
-        && ["idle", "busy", "starting"].includes(session.state)
+      .filter((session) => ["idle", "busy", "starting"].includes(session.state)
         && sessionRunsOutsideCoordinatorTab(session, this.#identity.parentTabId)
         && sessionEnvironmentCompatible(session, normalizedRequest, trustScope)
         && authorityContained(
@@ -170,7 +159,6 @@ export class DelegationService {
     if (!compatible) session = { ...session, ownershipId: session.id };
     const existingArtifactRootIds = new Set(session.artifactRoots.map((root) => root.id));
     session = await this.#ensureArtifactRoot(session);
-    const cycleId = randomUUID();
     let delegation: Delegation = {
       version: STORE_VERSION,
       id: runId,
@@ -178,7 +166,6 @@ export class DelegationService {
       parentPaneId: this.#identity.parentPaneId,
       sessionId: session.id,
       callbackToken: session.callbackToken,
-      handoffProtocolVersion: HANDOFF_PROTOCOL_VERSION,
       state: "prepared",
       request: structuredClone(normalizedRequest),
       purpose: normalizedRequest.purpose,
@@ -189,12 +176,12 @@ export class DelegationService {
       questions: [],
       evidence: [],
       runtimeCwd: normalizedRequest.cwd,
-      handoff: { id: cycleId },
       revision: 1,
       createdAt: now,
       updatedAt: now,
     };
     delegation.authorityBaseline = { ...trustBaseline, capturedAt: now };
+    delegation = this.#cycles.begin(delegation);
     if (compatible) {
       try {
         this.#mutations.mutate(session.id, (draft) => {
@@ -229,28 +216,13 @@ export class DelegationService {
     }
 
     if (reviewedOriginal) {
-      this.#mutations.mutate(reviewedOriginal.sessionId, (draft) => {
-        if (!draft.run || draft.run.id !== reviewedOriginal.id) return;
-        draft.run = {
-          ...draft.run,
-          reviewerIds: [...new Set([...draft.run.reviewerIds, delegation.id])],
-          revision: draft.run.revision + 1,
-          acceptanceTicket: undefined,
-          updatedAt: now,
-        };
-      }, { kinds: { run: "relation" } });
+      this.#cycles.attachReviewer(reviewedOriginal.id, delegation.id);
     }
 
-    delegation = this.#mutations.mutate(session.id, (draft) => {
-      draft.run = transitionDelegation(draft.run!, "starting", now);
-      return draft.run;
-    }, { kinds: { run: "transition" } });
     try {
       if (compatible) {
-        return await this.#mutations.withEffect(
-          session.id,
-          ({ session: capturedSession, run }) => ({ session: capturedSession, run: run! }),
-          async ({ session: capturedSession, run }) => {
+        return await this.#cycles.confirmDispatch(session.id, runId, {
+          launch: async ({ session: capturedSession, run }) => {
             await this.#herdr.request("agent.prompt", {
               target: primarySessionPaneId(capturedSession),
               text: buildDelegationBrief({
@@ -260,27 +232,12 @@ export class DelegationService {
               }, temporaryArtifactRoot(capturedSession)),
               wait: { until: ["working"], timeout_ms: 30_000 },
             }, { signal, timeoutMs: 35_000 });
+            return {};
           },
-          (draft) => {
-            draft.run = recordRuntimeStatus({
-              ...transitionDelegation(draft.run!, "working"),
-              health: "working",
-            }, "working");
-            draft.session = {
-              ...draft.session,
-              state: "busy",
-              health: "working",
-              updatedAt: draft.run.updatedAt,
-            };
-            return draft.run;
-          },
-          { run: "transition", session: "transition" },
-        );
+        });
       }
-      return await this.#mutations.withEffect(
-        session.id,
-        ({ session: capturedSession, run }) => ({ session: capturedSession, run: run! }),
-        async ({ session: capturedSession, run }, { checkpoint }) => {
+      return await this.#cycles.confirmDispatch(session.id, runId, {
+        launch: async ({ session: capturedSession, run }, emitResource) => {
           const launchSpec: LaunchSpec = {
             delegationId: capturedSession.id,
             parentSessionId: run.parentSessionId,
@@ -311,16 +268,10 @@ export class DelegationService {
                   : resource.path;
                 baseline = await captureAuthorityBaseline(this.#runner, auditCwd);
               }
-              checkpoint((draft) => {
-                draft.session = upsertSessionResource(
-                  baseline ? { ...draft.session, authorityBaseline: baseline } : draft.session,
-                  resource,
-                );
-                if (baseline && draft.run) draft.run = { ...draft.run, authorityBaseline: baseline };
-              }, { session: "resource", run: baseline ? "health" : undefined });
+              emitResource(resource, baseline);
             },
           };
-          return normalizedRequest.topology === "pane"
+          const launched = normalizedRequest.topology === "pane"
             ? this.#serialized(SHARED_TAB_POOL_QUEUE, () => this.#topologies.launch({
                 ...launchSpec,
                 sharedTab: findSharedTabTarget(
@@ -329,25 +280,10 @@ export class DelegationService {
                 ),
               }, signal))
             : this.#topologies.launch(launchSpec, signal);
+          const result = await launched;
+          return { cwd: result.cwd, runtimeCwd: result.cwd };
         },
-        (draft, launch) => {
-          draft.run = recordRuntimeStatus({
-            ...transitionDelegation(draft.run!, "working"),
-            health: "working",
-            runtimeCwd: launch.cwd,
-          }, "working");
-          draft.session = {
-            ...draft.session,
-            state: "busy",
-            cwd: launch.cwd,
-            runtimeCwd: launch.cwd,
-            health: "working",
-            updatedAt: draft.run.updatedAt,
-          };
-          return draft.run;
-        },
-        { run: "transition", session: "transition" },
-      );
+      });
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "STALE_SESSION_MUTATION")) {
         this.#mutations.mutate(session.id, (draft) => {
@@ -372,103 +308,9 @@ export class DelegationService {
 
   async inspect(id: string, signal?: AbortSignal): Promise<InspectResult> {
     const observed = this.get(id);
-    if (observed.state !== "ready_for_review") {
-      if (isHandoffClaimPending(observed)) throw handoffClaimPending("inspect");
-      throw new Error(`RUN_NOT_REVIEWABLE: Run ${id} is ${observed.state}`);
-    }
     const session = this.#repository.getSession(observed.sessionId)!;
     await this.#registerArtifactRoots(session);
-    return this.#mutations.withEffect(
-      observed.sessionId,
-      ({ run, session: capturedSession }) => {
-        const captured = run!;
-        if (captured.state !== "ready_for_review") {
-          throw new Error(`RUN_NOT_REVIEWABLE: Run ${id} is ${captured.state}`);
-        }
-        if ((captured.handoffProtocolVersion ?? LEGACY_HANDOFF_PROTOCOL_VERSION)
-          !== LEGACY_HANDOFF_PROTOCOL_VERSION
-          && captured.handoff?.settled !== true) throw handoffClaimPending("inspect");
-        return {
-          run: captured,
-          session: capturedSession,
-          revision: captured.revision,
-          cycleId: captured.handoff?.id,
-        };
-      },
-      async ({ run, session: capturedSession }) => {
-        const paneId = primaryPaneId(run);
-        const baseline = run.authorityBaseline ?? {
-          capturedAt: run.createdAt,
-          statusLines: [],
-        };
-        const panePromise = this.#herdr.request<{ pane?: Record<string, unknown> }>(
-          "pane.get",
-          { pane_id: paneId },
-          { signal },
-        );
-        const auditPromise = auditAuthority(
-          this.#runner,
-          run.runtimeCwd ?? run.request.cwd,
-          run.request.authority,
-          baseline,
-        );
-        const evidencePromise = (run.handoffProtocolVersion ?? LEGACY_HANDOFF_PROTOCOL_VERSION)
-          === LEGACY_HANDOFF_PROTOCOL_VERSION
-          ? this.#herdr.request<Record<string, unknown>>(
-              "pane.read",
-              { pane_id: paneId, source: "recent_unwrapped", lines: 240, format: "text" },
-              { signal },
-            ).then((read) => ({ paneOutput: extractPaneText(read), manifest: undefined }))
-          : this.#loadManifest(run, capturedSession).then((manifest) => ({
-              paneOutput: manifest.summary,
-              manifest,
-            }));
-        const [paneResult, audit, evidence] = await Promise.all([
-          panePromise,
-          auditPromise,
-          evidencePromise,
-        ]);
-        return { paneResult, audit, ...evidence };
-      },
-      (draft, result, captured) => {
-        if (!draft.run
-          || draft.run.revision !== captured.revision
-          || draft.run.handoff?.id !== captured.cycleId
-          || draft.run.state !== "ready_for_review") {
-          throw new Error("STALE_INSPECTION: Run revision or handoff cycle changed");
-        }
-        const inspectedAt = new Date().toISOString();
-        const sequence = draft.session.mutationSequence + 1;
-        draft.run = {
-          ...draft.run,
-          handoff: result.manifest
-            ? { ...draft.run.handoff, manifest: result.manifest }
-            : draft.run.handoff,
-          evidence: [...draft.run.evidence, {
-            ...result.audit.evidence,
-            paneOutput: result.paneOutput,
-            commands: result.manifest?.commands,
-          }],
-          acceptanceTicket: result.audit.ok ? {
-            token: randomBytes(18).toString("base64url"),
-            revision: draft.run.revision,
-            inspectedAt,
-            cycleId: draft.run.handoff?.id,
-            mutationSequence: sequence,
-            manifestSha256: draft.run.handoff?.manifestSha256,
-          } : undefined,
-          health: result.audit.ok ? draft.run.health : "authority_violation",
-          updatedAt: inspectedAt,
-        };
-        return {
-          delegation: draft.run,
-          paneOutput: result.paneOutput,
-          audit: result.audit,
-          pane: result.paneResult.pane,
-        };
-      },
-      { run: "evidence" },
-    );
+    return this.#cycles.inspect(id, signal);
   }
 
   async send(
@@ -477,54 +319,7 @@ export class DelegationService {
     options: { questionId?: string; correction?: boolean } = {},
     signal?: AbortSignal,
   ): Promise<Delegation> {
-    let delegation = this.get(id);
-      if (!message.trim()) throw new Error("Message cannot be empty");
-      if (["accepted", "failed", "cancelled"].includes(delegation.state)) {
-        throw new Error(`RUN_TERMINAL: Run ${id} is ${delegation.state}; use holistic_create for a new mission`);
-      }
-      const now = new Date().toISOString();
-      const cycleId = randomUUID();
-      delegation = this.#mutations.mutate(delegation.sessionId, (draft) => {
-        let run = draft.run!;
-        if (options.correction && run.state === "ready_for_review") {
-          run = transitionDelegation(run, "correcting", now);
-        }
-        const questions = run.questions.map((question) =>
-          options.questionId && question.id === options.questionId
-            ? { ...question, answer: message, answeredAt: now }
-            : question,
-        );
-        draft.run = { ...beginHandoffCycle(run, cycleId, now), questions, updatedAt: now };
-        return draft.run;
-      }, { kinds: { run: options.questionId ? "question" : "transition" } });
-      try {
-        return await this.#mutations.withEffect(
-          delegation.sessionId,
-          ({ run, session }) => ({ run: run!, session }),
-          async ({ run, session }) => {
-            await this.#herdr.request(
-              "agent.prompt",
-              {
-                target: primaryPaneId(run),
-                text: buildFollowUpPrompt(run, message, temporaryArtifactRoot(session)),
-                wait: { until: ["working"], timeout_ms: 30_000 },
-              },
-              { signal, timeoutMs: 35_000 },
-            );
-          },
-          (draft) => {
-            draft.run = recordRuntimeStatus(draft.run!, "working");
-            draft.session = { ...draft.session, health: "working", updatedAt: draft.run.updatedAt };
-            return draft.run;
-          },
-          { run: "health", session: "health" },
-        );
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "STALE_SESSION_MUTATION")) {
-          this.#failPromptDispatch(delegation, error);
-        }
-        throw error;
-      }
+    return this.#cycles.dispatch(id, message, options, signal);
   }
 
   manage(
@@ -535,47 +330,13 @@ export class DelegationService {
     return (async () => {
       let delegation = this.get(id);
       if (action === "focus") {
-        await this.#herdr.request("pane.focus", { pane_id: primaryPaneId(delegation) });
+        const pane = delegation.resources.filter((resource) => resource.kind === "pane").at(-1);
+        if (!pane) throw new Error(`Delegation ${delegation.id} has no pane`);
+        await this.#herdr.request("pane.focus", { pane_id: pane.id });
         return delegation;
       }
       if (action === "accept") {
-        for (const reviewerId of delegation.reviewerIds) {
-          if (this.get(reviewerId).state !== "accepted") {
-            throw new Error(`Reviewer delegation ${reviewerId} has not been accepted by the parent`);
-          }
-        }
-        return this.#mutations.mutate(delegation.sessionId, (draft) => {
-          if (!draft.run || draft.run.id !== id) {
-            throw new Error(`RUN_NOT_ACTIVE: Run ${id} is not the active Run of its Agent Session`);
-          }
-          const run = draft.run!;
-          if (isHandoffClaimPending(run)) throw handoffClaimPending("accept");
-          if (run.state !== "ready_for_review") {
-            throw new Error(`RUN_NOT_REVIEWABLE: Run ${id} is ${run.state}; wait for a complete handoff`);
-          }
-          if (!run.acceptanceTicket
-            || run.acceptanceTicket.revision !== run.revision
-            || run.acceptanceTicket.cycleId !== run.handoff?.id
-            || run.acceptanceTicket.mutationSequence !== draft.session.mutationSequence) {
-            throw new Error("STALE_INSPECTION: Inspect evidence for the current Run before accepting");
-          }
-          const now = new Date().toISOString();
-          draft.run = {
-            ...transitionDelegation(run, "accepted", now),
-            health: undefined,
-            failure: undefined,
-          };
-          draft.session = {
-            ...draft.session,
-            state: "idle",
-            activeRunId: undefined,
-            health: "idle",
-            failure: undefined,
-            updatedAt: now,
-            lastUsedAt: now,
-          };
-          return draft.run;
-        }, { kinds: { run: "transition", session: "transition" } });
+        return this.#cycles.accept(id);
       }
       if (action === "fail") {
         return this.#mutations.mutate(delegation.sessionId, (draft) => {
@@ -682,99 +443,16 @@ export class DelegationService {
     })();
   }
 
-  reconcile(snapshot: HerdrSnapshot): ReturnType<typeof reconcileSnapshot> {
-    return reconcileSnapshot(this.#repository, this.#mutations, snapshot);
+  reconcile(snapshot: HerdrSnapshot): ReconciliationResult {
+    return this.#cycles.reconcileSnapshot(snapshot);
   }
 
-  async onInfrastructureEvent(event: HerdrSubscriptionEvent): Promise<Delegation | undefined> {
-    const data = (event.data ?? event) as Record<string, unknown>;
-    const paneId = typeof data.pane_id === "string" ? data.pane_id : undefined;
-    if (paneId && data.agent_status === "idle") {
-      const session = this.#repository.listSessions().find((candidate) =>
-        candidate.resources.some((resource) => resource.kind === "pane" && resource.id === paneId),
-      );
-      if (!session?.activeRunId) return undefined;
-      const confirmationId = randomUUID();
-      const guarded = this.#mutations.mutate(session.id, (draft) => {
-        if (!draft.run?.handoff?.working || draft.run.handoff.settled) return false;
-        draft.run = {
-          ...draft.run,
-          handoff: { ...draft.run.handoff, pendingIdleConfirmation: confirmationId },
-        };
-        return true;
-      }, { kinds: { run: "health" } });
-      try {
-        return await this.#mutations.withEffect(
-          session.id,
-          () => undefined,
-          async () => {
-            try {
-              return await this.#herdr.request<{ pane?: { agent_status?: unknown } }>(
-                "pane.get",
-                { pane_id: paneId },
-              );
-            } catch {
-              return this.#herdr.request<{ pane?: { agent_status?: unknown } }>(
-                "pane.get",
-                { pane_id: paneId },
-              );
-            }
-          },
-          (draft, result) => {
-            const liveStatus = result.pane?.agent_status;
-            if (!isAgentRuntimeStatus(liveStatus)) return undefined;
-            if (guarded && draft.run?.handoff?.pendingIdleConfirmation !== confirmationId) {
-              throw new Error("STALE_RUNTIME_STATUS_CONFIRMATION");
-            }
-            if (guarded && draft.run?.handoff) {
-              draft.run = {
-                ...draft.run,
-                handoff: { ...draft.run.handoff, pendingIdleConfirmation: undefined },
-              };
-            }
-            return reduceInfrastructureEvent(draft, {
-              ...event,
-              data: { ...data, agent_status: liveStatus },
-            });
-          },
-          { run: "health", session: "health" },
-        );
-      } catch (error) {
-        this.#mutations.mutate(session.id, (draft) => {
-          if (draft.run?.handoff?.pendingIdleConfirmation !== confirmationId) return;
-          const now = new Date().toISOString();
-          draft.run = {
-            ...draft.run,
-            handoff: { ...draft.run.handoff, pendingIdleConfirmation: undefined },
-            health: "runtime_confirmation_failed",
-            updatedAt: now,
-          };
-          draft.session = {
-            ...draft.session,
-            health: "runtime_confirmation_failed",
-            updatedAt: now,
-          };
-        }, { kinds: { run: "health", session: "health" } });
-        throw error;
-      }
-    }
-    return applyInfrastructureEvent(this.#repository, this.#mutations, event);
+  onInfrastructureEvent(event: HerdrSubscriptionEvent): Promise<Delegation | undefined> {
+    return this.#cycles.onInfrastructureEvent(event);
   }
 
   handleCallbackInput(text: string): CallbackHandlingResult {
-    const callback = parseCallback(text);
-    if (!callback) return { matched: false, valid: false };
-    const current = this.#repository.get(callback.delegationId);
-    if (!current) return handleCallbackInput(text, undefined, undefined);
-    const observedSession = this.#repository.getSession(current.sessionId);
-    if (observedSession?.activeRunId !== current.id) {
-      return handleCallbackInput(text, current, observedSession);
-    }
-    return this.#mutations.mutate(current.sessionId, (draft) => {
-      const result = handleCallbackInput(text, draft.run, draft.session);
-      if (result.valid && result.delegation) draft.run = result.delegation;
-      return result;
-    }, { kinds: { run: "health" } });
+    return this.#cycles.handleCallbackInput(text);
   }
 
   #serialized<T>(id: string, operation: () => Promise<T>): Promise<T> {
@@ -784,27 +462,6 @@ export class DelegationService {
     return current.finally(() => {
       if (this.#queues.get(id) === current) this.#queues.delete(id);
     });
-  }
-
-  #failPromptDispatch(run: Delegation, error: unknown): void {
-    this.#mutations.mutate(run.sessionId, (draft) => {
-      if (!draft.run || draft.run.id !== run.id || !isActiveState(draft.run.state)) return;
-      const now = new Date().toISOString();
-      const failure = `agent.prompt failed after starting revision ${run.revision}: ${errorMessage(error)}`;
-      draft.run = {
-        ...transitionDelegation(draft.run, "failed", now),
-        failure,
-        health: "failed",
-      };
-      draft.session = {
-        ...draft.session,
-        state: "failed",
-        activeRunId: undefined,
-        health: "failed",
-        failure,
-        updatedAt: now,
-      };
-    }, { kinds: { run: "transition", session: "transition" } });
   }
 
   async #registerArtifactRoots(session: AgentSession): Promise<void> {
@@ -827,49 +484,6 @@ export class DelegationService {
       }
     }
     await this.#artifacts.removeRoot(root.id);
-  }
-
-  async #loadManifest(
-    run: Delegation,
-    session: AgentSession,
-  ): Promise<HandoffManifest> {
-    const cycle = run.handoff;
-    const root = temporaryArtifactRoot(session);
-    if (!cycle?.id || !cycle.manifestId || !cycle.manifestSha256 || !root) {
-      throw new Error("INVALID_HANDOFF_MANIFEST: structured handoff claim or artifact root is missing");
-    }
-    const cycleId = cycle.id;
-    const bytes = await this.#artifacts.readClaimed(root.id, {
-      runId: run.id,
-      cycleId,
-      id: cycle.manifestId,
-      sha256: cycle.manifestSha256,
-      maxSizeBytes: 1024 * 1024,
-    });
-    const manifest = parseManifest(bytes, {
-      maxSerializedBytes: 1024 * 1024,
-      maxArtifacts: 64,
-    });
-    if (manifest.cycleId !== cycleId) {
-      throw new Error("INVALID_HANDOFF_MANIFEST: manifest cycle does not match the active handoff cycle");
-    }
-    const registered = new Set(session.artifactRoots
-      .filter((item) => !item.removedAt)
-      .map((item) => item.id));
-    let totalBytes = 0;
-    for (const ref of manifest.artifacts) {
-      if (!registered.has(ref.rootId)) {
-        throw new Error(`INVALID_HANDOFF_MANIFEST: unregistered artifact root ${ref.rootId}`);
-      }
-      totalBytes += ref.size;
-      if (!Number.isSafeInteger(totalBytes) || totalBytes > 64 * 1024 * 1024) {
-        throw new Error("INVALID_HANDOFF_MANIFEST: total artifact size exceeds limit");
-      }
-    }
-    await Promise.all(manifest.artifacts.map((ref) =>
-      this.#artifacts.verify(ref, { runId: run.id, cycleId }),
-    ));
-    return manifest;
   }
 
   #fixedModelEligible(
@@ -934,20 +548,8 @@ function buildChildEnv(
   };
 }
 
-function temporaryArtifactRoot(session: AgentSession): ArtifactRootRegistration | undefined {
-  return session.artifactRoots.find((root) => !root.durable && !root.removedAt);
-}
-
 function ownershipToken(delegation: Delegation): string {
   return delegation.callbackToken;
-}
-
-function upsertSessionResource(session: AgentSession, resource: DelegationResource): AgentSession {
-  const resources = [...session.resources];
-  const index = resources.findIndex((item) => item.kind === resource.kind && item.id === resource.id);
-  if (index < 0) resources.push(resource);
-  else resources[index] = resource;
-  return { ...session, resources, updatedAt: new Date().toISOString() };
 }
 
 function primarySessionPaneId(session: AgentSession): string {
@@ -972,12 +574,6 @@ function sessionBusy(): Error & { code: string } {
       "SESSION_BUSY: Agent Session has an active Run; no queue or preemption is performed",
     ),
     { code: "SESSION_BUSY" },
-  );
-}
-
-function handoffClaimPending(action: "inspect" | "accept"): Error {
-  return new Error(
-    `HANDOFF_CLAIM_PENDING: Wait for the corresponding child agent_settled event before ${action}ing`,
   );
 }
 
@@ -1031,19 +627,4 @@ function pathContains(parent: string, child: string): boolean {
   const delta = relative(parent, child);
   return delta === ""
     || (delta !== ".." && !delta.startsWith(`..${sep}`) && !isAbsolute(delta));
-}
-
-function primaryPaneId(delegation: Delegation): string {
-  const panes = delegation.resources.filter((resource) => resource.kind === "pane");
-  const pane = panes.at(-1);
-  if (!pane) throw new Error(`Delegation ${delegation.id} has no pane`);
-  return pane.id;
-}
-
-function extractPaneText(result: Record<string, unknown>): string {
-  const read = result.read as Record<string, unknown> | undefined;
-  for (const candidate of [read?.text, read?.content, result.text, result.content]) {
-    if (typeof candidate === "string") return candidate;
-  }
-  return JSON.stringify(read ?? result);
 }

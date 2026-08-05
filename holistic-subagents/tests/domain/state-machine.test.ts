@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  beginHandoffCycle,
   InvalidDelegationTransition,
-  recordHandoffClaim,
-  recordRuntimeStatus,
   transitionDelegation,
 } from "../../src/domain/state-machine.ts";
 import type { Delegation } from "../../src/domain/types.ts";
@@ -72,46 +69,5 @@ describe("delegation state machine", () => {
     expect(() => transitionDelegation(fixture("working"), "accepted")).toThrow(
       InvalidDelegationTransition,
     );
-  });
-
-  it("does not let a prior cycle's settle promote a new handoff claim", () => {
-    const started = recordRuntimeStatus(fixture("working"), "working");
-    const settled = recordRuntimeStatus(started, "idle");
-    const nextCycle = beginHandoffCycle(settled);
-    const claimed = recordHandoffClaim(nextCycle);
-
-    expect(settled).toMatchObject({ handoff: { working: true, settled: true } });
-    expect(claimed).toMatchObject({
-      state: "working",
-      revision: started.revision + 1,
-      handoff: { claimed: true },
-    });
-  });
-
-  it("keeps a claim when a working status arrives late, then settles it", () => {
-    const cycle = beginHandoffCycle(fixture("working"));
-    const claimed = recordHandoffClaim(cycle);
-    const lateWorking = recordRuntimeStatus(claimed, "working");
-    const settled = recordRuntimeStatus(lateWorking, "idle");
-
-    expect(lateWorking).toMatchObject({
-      state: "working",
-      revision: cycle.revision,
-      handoff: { claimed: true, working: true },
-    });
-    expect(settled.state).toBe("ready_for_review");
-  });
-
-  it("does not let a late working status answer a blocking question", () => {
-    const working = recordRuntimeStatus(fixture("working"), "working");
-    const awaitingInput = transitionDelegation(working, "awaiting_input");
-
-    const lateWorking = recordRuntimeStatus(awaitingInput, "working");
-
-    expect(lateWorking).toMatchObject({
-      state: "awaiting_input",
-      health: "working",
-      handoff: { working: true },
-    });
   });
 });

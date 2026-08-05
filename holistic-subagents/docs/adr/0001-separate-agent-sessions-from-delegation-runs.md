@@ -2,7 +2,7 @@
 
 ## Status
 
-Aceita
+Parcialmente superada pela ADR 0004
 
 ## Contexto
 
@@ -45,7 +45,8 @@ híbrido de operações de alta intenção. Esse módulo profundo esconde o kern
 estado, eventos, persistência e o adapter Herdr, aumentando leverage para todos
 os callers e locality das invariantes. O store v2 separa Sessions e Runs; um
 adapter lê registros v1 em memória e toda gravação nova usa somente v2.
-Sessions migradas de v1 ficam seladas e não reutilizáveis.
+Sessions migradas de v1 ficam seladas e não reutilizáveis. A compatibilidade
+legada desta frase foi posteriormente removida pela ADR 0004.
 
 O estado terminal é persistido primeiro na Run. Se houver queda antes de
 persistir a Session correspondente, o replay v2 reconhece deterministicamente

@@ -7,13 +7,11 @@ import { DelegationService } from "../../src/domain/service.ts";
 import {
   DelegationRepository,
   InMemoryDelegationStore,
-  PiSessionDelegationStore,
 } from "../../src/domain/store.ts";
 import {
-  LEGACY_HANDOFF_PROTOCOL_VERSION,
-  LEGACY_STORE_CUSTOM_TYPE,
   type Delegation,
   type DelegationRequest,
+  type DelegationStorePort,
 } from "../../src/domain/types.ts";
 import { createModelPolicyResolver, parseModelPolicy } from "../../src/models/policy.ts";
 import {
@@ -36,6 +34,29 @@ afterEach(async () => {
 const modelPolicy = createModelPolicyResolver(parseModelPolicy(
   readFileSync(new URL("../../src/models/default-policy.json", import.meta.url), "utf8"),
 ));
+
+const ACTIVE_RUN_STATES = [
+  "prepared",
+  "starting",
+  "working",
+  "awaiting_input",
+  "correcting",
+  "ready_for_review",
+] as const;
+
+function expectNoActiveRunWithoutCycle(store: DelegationStorePort): void {
+  for (const record of store.records()) {
+    if (
+      record.entity === "run"
+      && ACTIVE_RUN_STATES.includes(record.snapshot.state as (typeof ACTIVE_RUN_STATES)[number])
+    ) {
+      expect(
+        record.snapshot.handoff?.id,
+        `run ${record.snapshot.id} persisted ${record.kind} as ${record.snapshot.state} without a Handoff Cycle`,
+      ).toBeTruthy();
+    }
+  }
+}
 
 function request(): DelegationRequest {
   return {
@@ -113,7 +134,6 @@ function service(available = { value: [
       const session = repository.listSessions()[0];
       return { workspace: { tokens: session ? { delegation: session.ownershipId } : {} } };
     }
-    if (method === "pane.read") return { read: { text: "handoff evidence" } };
     return { type: "ok" };
   });
   const herdr = { request: requestMock } as never;
@@ -172,26 +192,27 @@ async function publishManifest(repository: DelegationRepository, run: Delegation
   return { manifest, manifestId, sha256: sha256HexOf(bytes), cycleId };
 }
 
-function markLegacyActive(repository: DelegationRepository, run: Delegation): Delegation {
-  const legacy = { ...run, handoffProtocolVersion: LEGACY_HANDOFF_PROTOCOL_VERSION };
-  repository.save(legacy, "transition");
-  return legacy;
-}
-
-function markLegacyReviewable(
+async function markReviewable(
   repository: DelegationRepository,
   run: Delegation,
   extras: Partial<Delegation> = {},
-): Delegation {
-  const legacy: Delegation = {
+): Promise<Delegation> {
+  const claim = await publishManifest(repository, run);
+  const reviewable: Delegation = {
     ...run,
-    handoffProtocolVersion: LEGACY_HANDOFF_PROTOCOL_VERSION,
     state: "ready_for_review",
-    handoff: undefined,
+    handoff: {
+      id: claim.cycleId,
+      claimed: true,
+      working: true,
+      settled: true,
+      manifestId: claim.manifestId,
+      manifestSha256: claim.sha256,
+    },
     ...extras,
   };
-  repository.save(legacy, "transition");
-  return legacy;
+  repository.save(reviewable, "transition");
+  return reviewable;
 }
 
 describe("DelegationService", () => {
@@ -213,6 +234,40 @@ describe("DelegationService", () => {
       expect.objectContaining({ target: expect.stringMatching(/^task-/) }),
       expect.anything(),
     );
+  });
+
+  it("persists the first Handoff Cycle atomically with Run creation", async () => {
+    const store = new InMemoryDelegationStore();
+    const { value: svc } = service(undefined, { repository: new DelegationRepository(store) });
+
+    await svc.create(request());
+
+    // Se o processo cair em qualquer ponto da criação, o event log nunca pode
+    // conter uma Run ativa sem Handoff Cycle (não existe janela entre a
+    // criação da Run e o início do ciclo).
+    expectNoActiveRunWithoutCycle(store);
+    const runRecords = store.records().filter((record) => record.entity === "run");
+    expect(runRecords.length).toBeGreaterThan(0);
+    expect(runRecords[0]!.snapshot).toMatchObject({
+      state: "starting",
+      handoff: { id: expect.any(String) },
+    });
+  });
+
+  it("leaves no active Run without a cycle when the creation boundary fails mid-append", async () => {
+    const inner = new InMemoryDelegationStore();
+    let appends = 0;
+    const flaky: DelegationStorePort = {
+      append(record) {
+        if (++appends === 2) throw new Error("simulated append failure");
+        inner.append(record);
+      },
+      records: () => inner.records(),
+    };
+    const { value: svc } = service(undefined, { repository: new DelegationRepository(flaky) });
+
+    await expect(svc.create(request())).rejects.toThrow("simulated append failure");
+    expectNoActiveRunWithoutCycle(inner);
   });
 
   it("packs at most three clean-context subagents into each auxiliary tab", async () => {
@@ -239,7 +294,7 @@ describe("DelegationService", () => {
   it("requires inspection before parent acceptance", async () => {
     const fixture = service();
     const delegation = await fixture.value.create(request());
-    markLegacyReviewable(fixture.repository, delegation);
+    await markReviewable(fixture.repository, delegation);
     await expect(fixture.value.manage(delegation.id, "accept")).rejects.toThrow("Inspect evidence");
     await fixture.value.inspect(delegation.id);
     const accepted = await fixture.value.manage(delegation.id, "accept");
@@ -317,10 +372,10 @@ describe("DelegationService", () => {
   it("does not inspect or ticket a handoff before the child agent settles", async () => {
     const fixture = service();
     const delegation = await fixture.value.create(request());
-    markLegacyActive(fixture.repository, delegation);
+    const claim = await publishManifest(fixture.repository, delegation);
     const paneId = delegation.resources.find((resource) => resource.kind === "pane")!.id;
     fixture.value.handleCallbackInput(
-      `[HOLISTIC_HANDOFF_READY] delegation=${delegation.id} pane=${paneId} token=${delegation.callbackToken}`,
+      `[HOLISTIC_HANDOFF_READY] delegation=${delegation.id} pane=${paneId} token=${delegation.callbackToken} cycle=${claim.cycleId} manifest=${claim.manifestId} sha256=${claim.sha256}`,
     );
 
     await expect(fixture.value.inspect(delegation.id)).rejects.toThrow("HANDOFF_CLAIM_PENDING");
@@ -353,7 +408,7 @@ describe("DelegationService", () => {
     });
     const inspection = await fixture.value.inspect(delegation.id);
     expect(inspection).toMatchObject({
-      paneOutput: "handoff evidence",
+      paneOutput: "structured evidence",
       delegation: { state: "ready_for_review" },
     });
     expect(inspection.delegation.acceptanceTicket).toBeDefined();
@@ -362,12 +417,11 @@ describe("DelegationService", () => {
   it("distinguishes a pending claim, a non-reviewable Run and stale inspection", async () => {
     const fixture = service();
     const delegation = await fixture.value.create(request());
-    markLegacyActive(fixture.repository, delegation);
     const paneId = delegation.resources.find((resource) => resource.kind === "pane")!.id;
 
     await expect(fixture.value.manage(delegation.id, "accept")).rejects.toThrow("RUN_NOT_REVIEWABLE");
     fixture.value.handleCallbackInput(
-      `[HOLISTIC_HANDOFF_READY] delegation=${delegation.id} pane=${paneId} token=${delegation.callbackToken}`,
+      `[HOLISTIC_HANDOFF_READY] delegation=${delegation.id} pane=${paneId} token=${delegation.callbackToken} cycle=${delegation.handoff!.id} manifest=m1 sha256=${"a".repeat(64)}`,
     );
     await expect(fixture.value.manage(delegation.id, "accept")).rejects.toThrow("HANDOFF_CLAIM_PENDING");
     await fixture.value.onInfrastructureEvent({
@@ -448,12 +502,12 @@ describe("DelegationService", () => {
   it("reuses the MRU compatible warm Session and keeps the Run ID distinct", async () => {
     const fixture = service();
     const first = await fixture.value.create({ ...request(), requiresCleanContext: true });
-    markLegacyReviewable(fixture.repository, first);
+    await markReviewable(fixture.repository, first);
     await fixture.value.inspect(first.id);
     await fixture.value.manage(first.id, "accept");
     await new Promise((resolve) => setTimeout(resolve, 2));
     const second = await fixture.value.create({ ...request(), name: "second", requiresCleanContext: true });
-    markLegacyReviewable(fixture.repository, second);
+    await markReviewable(fixture.repository, second);
     await fixture.value.inspect(second.id);
     await fixture.value.manage(second.id, "accept");
     const third = await fixture.value.create({ ...request(), name: "third" });
@@ -468,10 +522,10 @@ describe("DelegationService", () => {
     );
   });
 
-  it("does not warm-reuse a legacy pane Session from the coordinator tab", async () => {
+  it("does not warm-reuse a Session from the coordinator tab", async () => {
     const fixture = service();
     const first = await fixture.value.create(request());
-    markLegacyReviewable(fixture.repository, first);
+    await markReviewable(fixture.repository, first);
     await fixture.value.inspect(first.id);
     await fixture.value.manage(first.id, "accept");
     const session = fixture.repository.getSession(first.sessionId)!;
@@ -497,7 +551,7 @@ describe("DelegationService", () => {
     const fixture = service();
     const first = await fixture.value.create(request());
     await expect(fixture.value.manage(first.id, "cleanup")).rejects.toThrow("SESSION_BUSY");
-    markLegacyReviewable(fixture.repository, first);
+    await markReviewable(fixture.repository, first);
     await fixture.value.inspect(first.id);
     await fixture.value.manage(first.id, "accept");
     const clean = await fixture.value.create({ ...request(), name: "clean", requiresCleanContext: true });
@@ -507,7 +561,7 @@ describe("DelegationService", () => {
   it("does not reuse a Session above its immutable authority ceiling", async () => {
     const fixture = service();
     const first = await fixture.value.create(request());
-    markLegacyReviewable(fixture.repository, first);
+    await markReviewable(fixture.repository, first);
     await fixture.value.inspect(first.id);
     await fixture.value.manage(first.id, "accept");
     const elevated = await fixture.value.create({
@@ -523,7 +577,7 @@ describe("DelegationService", () => {
     ] };
     const fixture = service(available);
     const first = await fixture.value.create(request());
-    markLegacyReviewable(fixture.repository, first);
+    await markReviewable(fixture.repository, first);
     await fixture.value.inspect(first.id);
     await fixture.value.manage(first.id, "accept");
     available.value = [available.value[1]!];
@@ -535,7 +589,7 @@ describe("DelegationService", () => {
   it("reuses a fixed model only when its translated thinking is unchanged", async () => {
     const fixture = service();
     const first = await fixture.value.create({ ...request(), model: { minimumCapability: "scoped", effort: "medium" } });
-    markLegacyReviewable(fixture.repository, first);
+    await markReviewable(fixture.repository, first);
     await fixture.value.inspect(first.id);
     await fixture.value.manage(first.id, "accept");
 
@@ -546,7 +600,7 @@ describe("DelegationService", () => {
     });
     expect(compatibleThinking.modelResolution.thinking).toBe("xhigh");
     expect(compatibleThinking.sessionId).toBe(first.sessionId);
-    markLegacyReviewable(fixture.repository, compatibleThinking);
+    await markReviewable(fixture.repository, compatibleThinking);
     await fixture.value.inspect(compatibleThinking.id);
     await fixture.value.manage(compatibleThinking.id, "accept");
 
@@ -562,7 +616,7 @@ describe("DelegationService", () => {
   it("invalidates acceptance tickets and handoff latches after a correction", async () => {
     const fixture = service();
     const run = await fixture.value.create(request());
-    markLegacyReviewable(fixture.repository, run, { health: "idle" });
+    await markReviewable(fixture.repository, run, { health: "idle" });
     await fixture.value.inspect(run.id);
     fixture.requestMock.mockImplementationOnce(async (method: string) => {
       expect(method).toBe("agent.prompt");
@@ -580,8 +634,9 @@ describe("DelegationService", () => {
       handoff: { working: true },
     });
     const paneId = run.resources.find((resource) => resource.kind === "pane")!.id;
+    const claim = await publishManifest(fixture.repository, correcting);
     const claimed = fixture.value.handleCallbackInput(
-      `[HOLISTIC_HANDOFF_READY] delegation=${run.id} pane=${paneId} token=${run.callbackToken}`,
+      `[HOLISTIC_HANDOFF_READY] delegation=${run.id} pane=${paneId} token=${run.callbackToken} cycle=${claim.cycleId} manifest=${claim.manifestId} sha256=${claim.sha256}`,
     );
     expect(claimed.delegation?.state).toBe("working");
     await fixture.value.onInfrastructureEvent({
@@ -597,7 +652,7 @@ describe("DelegationService", () => {
   it("invalidates acceptance tickets and handoff latches after a follow-up", async () => {
     const fixture = service();
     const run = await fixture.value.create(request());
-    markLegacyReviewable(fixture.repository, run, { health: "idle" });
+    await markReviewable(fixture.repository, run, { health: "idle" });
     await fixture.value.inspect(run.id);
 
     const followedUp = await fixture.value.send(run.id, "Please add the command output.");
@@ -637,7 +692,7 @@ describe("DelegationService", () => {
   it("cleans Session resources after its Run is terminal", async () => {
     const fixture = service();
     const run = await fixture.value.create(request());
-    markLegacyReviewable(fixture.repository, run);
+    await markReviewable(fixture.repository, run);
     await fixture.value.inspect(run.id);
     await fixture.value.manage(run.id, "accept");
     await fixture.value.manage(run.id, "cleanup");
@@ -648,7 +703,7 @@ describe("DelegationService", () => {
   it("rejects a delayed callback from the prior Run after warm reuse", async () => {
     const fixture = service();
     const first = await fixture.value.create(request());
-    markLegacyReviewable(fixture.repository, first);
+    await markReviewable(fixture.repository, first);
     await fixture.value.inspect(first.id);
     await fixture.value.manage(first.id, "accept");
     const second = await fixture.value.create({ ...request(), name: "second" });
@@ -676,7 +731,7 @@ describe("DelegationService", () => {
       gitRoot: (cwd) => cwd.startsWith("/other") ? "/other" : "/repo",
     });
     const first = await fixture.value.create({ ...request(), cwd: "/repo/packages/a" });
-    markLegacyReviewable(fixture.repository, first);
+    await markReviewable(fixture.repository, first);
     await fixture.value.inspect(first.id);
     await fixture.value.manage(first.id, "accept");
     const sameRoot = await fixture.value.create({ ...request(), name: "same-root", cwd: "/repo/packages/b" });
@@ -688,7 +743,7 @@ describe("DelegationService", () => {
       expect.objectContaining({ text: expect.stringContaining("- cwd: /repo/packages/b") }),
       expect.anything(),
     );
-    markLegacyReviewable(fixture.repository, sameRoot);
+    await markReviewable(fixture.repository, sameRoot);
     await fixture.value.inspect(sameRoot.id);
     const auditCall = fixture.runner.run.mock.calls
       .filter(([, args]) => args[0] === "status")
@@ -702,7 +757,7 @@ describe("DelegationService", () => {
   it("does not reuse across topologies", async () => {
     const fixture = service();
     const pane = await fixture.value.create(request());
-    markLegacyReviewable(fixture.repository, pane);
+    await markReviewable(fixture.repository, pane);
     await fixture.value.inspect(pane.id);
     await fixture.value.manage(pane.id, "accept");
     const tab = await fixture.value.create({ ...request(), name: "tab", topology: "tab" });
@@ -729,7 +784,7 @@ describe("DelegationService", () => {
       branch: "agent/worktree",
     };
     const first = await fixture.value.create(worktreeRequest);
-    markLegacyReviewable(fixture.repository, first);
+    await markReviewable(fixture.repository, first);
     await fixture.value.inspect(first.id);
     await fixture.value.manage(first.id, "accept");
     const second = await fixture.value.create({ ...worktreeRequest, name: "worktree-two" });
@@ -739,7 +794,7 @@ describe("DelegationService", () => {
   it("reserves a warm Session before concurrent prompts", async () => {
     const fixture = service();
     const seed = await fixture.value.create(request());
-    markLegacyReviewable(fixture.repository, seed);
+    await markReviewable(fixture.repository, seed);
     await fixture.value.inspect(seed.id);
     await fixture.value.manage(seed.id, "accept");
     const results = await Promise.allSettled([
@@ -756,100 +811,6 @@ describe("DelegationService", () => {
     expect(prompts).toHaveLength(2); // seed plus exactly one successful concurrent dispatch
   });
 
-  it("never reuses resources adapted from a terminal v1 delegation", async () => {
-    const legacy = {
-      version: 1,
-      eventId: "legacy-accepted",
-      delegationId: "legacy-run",
-      kind: "transition",
-      at: "2026-01-01T00:00:00.000Z",
-      snapshot: {
-        version: 1,
-        id: "legacy-run",
-        parentSessionId: "s1",
-        parentPaneId: "parent",
-        callbackToken: "legacy-token",
-        state: "accepted",
-        purpose: "execution",
-        reviewerIds: [],
-        request: request(),
-        modelResolution: modelPolicy.resolve(request().model, [
-          { provider: "openai-codex", id: "gpt-5.6-luna", contextWindow: 200_000, input: ["text", "image"] },
-        ]),
-        resources: [{ kind: "pane", id: "legacy-pane", createdByExtension: true, ownershipToken: "legacy-token" }],
-        questions: [],
-        evidence: [],
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-01T00:00:00.000Z",
-      },
-    };
-    const repository = new DelegationRepository(new PiSessionDelegationStore([
-      { type: "custom", customType: LEGACY_STORE_CUSTOM_TYPE, data: legacy },
-    ], () => undefined));
-    const fixture = service(undefined, { repository });
-    await fixture.value.manage("legacy-run", "cleanup");
-    expect(fixture.requestMock).toHaveBeenCalledWith(
-      "pane.close",
-      { pane_id: "legacy-pane" },
-    );
-    const fresh = await fixture.value.create({ ...request(), name: "fresh-after-v1" });
-    expect(fresh.sessionId).not.toBe("legacy-session-legacy-run");
-    expect(repository.getSession("legacy-session-legacy-run")?.sealed).toBe(true);
-  });
-
-  it("cleans v1 resources using their original Herdr ownership identity", async () => {
-    const legacyRequest = {
-      ...request(),
-      topology: "worktree" as const,
-      authority: { mode: "isolated_mutation" as const, allowedPaths: [] },
-    };
-    const legacy = {
-      version: 1,
-      eventId: "legacy-worktree",
-      delegationId: "legacy-owner",
-      kind: "transition",
-      at: "2026-01-01T00:00:00.000Z",
-      snapshot: {
-        version: 1,
-        id: "legacy-owner",
-        parentSessionId: "s1",
-        parentPaneId: "parent",
-        callbackToken: "legacy-token",
-        state: "accepted",
-        purpose: "execution",
-        reviewerIds: [],
-        request: legacyRequest,
-        modelResolution: modelPolicy.resolve(legacyRequest.model, [
-          { provider: "openai-codex", id: "gpt-5.6-luna", contextWindow: 200_000, input: ["text", "image"] },
-        ]),
-        resources: [
-          { kind: "workspace", id: "legacy-workspace", createdByExtension: true, ownershipToken: "legacy-token" },
-          { kind: "pane", id: "legacy-pane", createdByExtension: true, ownershipToken: "legacy-token" },
-          { kind: "worktree", id: "legacy-workspace", path: "/tmp/legacy-worktree", createdByExtension: true, ownershipToken: "legacy-token" },
-        ],
-        questions: [],
-        evidence: [],
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-01T00:00:00.000Z",
-      },
-    };
-    const repository = new DelegationRepository(new PiSessionDelegationStore([
-      { type: "custom", customType: LEGACY_STORE_CUSTOM_TYPE, data: legacy },
-    ], () => undefined));
-    const fixture = service(undefined, { repository });
-    expect(repository.getSession("legacy-session-legacy-owner")?.ownershipId).toBe("legacy-owner");
-    await fixture.value.manage("legacy-owner", "cleanup");
-    expect(fixture.requestMock).toHaveBeenCalledWith(
-      "workspace.get",
-      { workspace_id: "legacy-workspace" },
-    );
-    expect(fixture.requestMock).toHaveBeenCalledWith(
-      "worktree.remove",
-      { workspace_id: "legacy-workspace", force: false },
-      expect.anything(),
-    );
-  });
-
   it("cancels an active Run on close but keeps cleanup busy rejection", async () => {
     const fixture = service();
     const cleanupRun = await fixture.value.create(request());
@@ -863,7 +824,7 @@ describe("DelegationService", () => {
     const gitStatus = { value: "" };
     const fixture = service(undefined, { gitStatus });
     const run = await fixture.value.create(request());
-    markLegacyReviewable(fixture.repository, run);
+    await markReviewable(fixture.repository, run);
     gitStatus.value = "?? violation.txt\n";
     const inspection = await fixture.value.inspect(run.id);
     expect(inspection.audit.ok).toBe(false);

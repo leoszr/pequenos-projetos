@@ -7,7 +7,6 @@ import {
   recordsFromSessionEntries,
 } from "../../src/domain/store.ts";
 import {
-  LEGACY_STORE_CUSTOM_TYPE,
   STORE_CUSTOM_TYPE,
   type AgentSession,
   type Delegation,
@@ -20,7 +19,6 @@ const delegation: Delegation = {
   parentSessionId: "s1",
   parentPaneId: "p1",
   callbackToken: "secret",
-  handoffProtocolVersion: 0,
   state: "prepared",
   purpose: "execution",
   reviewerIds: [],
@@ -72,17 +70,16 @@ function session(state: AgentSession["state"] = "busy"): AgentSession {
 }
 
 describe("delegation event store", () => {
-  it("normalizes older v2 snapshots to Sequence zero and legacy handoff", () => {
+  it("normalizes older v2 snapshots to Sequence zero and empty artifact roots", () => {
     const { mutationSequence: _sequence, artifactRoots: _roots, ...oldSession } = session();
-    const { handoffProtocolVersion: _protocol, ...oldRun } = delegation;
     const memory = new InMemoryDelegationStore([
       {
         version: 2, eventId: "session-old", kind: "created", at: oldSession.updatedAt,
         entity: "session", entityId: oldSession.id, snapshot: oldSession,
       },
       {
-        version: 2, eventId: "run-old", kind: "created", at: oldRun.updatedAt,
-        entity: "run", entityId: oldRun.id, delegationId: oldRun.id, snapshot: oldRun,
+        version: 2, eventId: "run-old", kind: "created", at: delegation.updatedAt,
+        entity: "run", entityId: delegation.id, delegationId: delegation.id, snapshot: delegation,
       },
     ] as never);
 
@@ -92,7 +89,6 @@ describe("delegation event store", () => {
       mutationSequence: 0,
       artifactRoots: [],
     });
-    expect(repository.get(oldRun.id)?.handoffProtocolVersion).toBe(0);
   });
 
   it("rebuilds snapshots and ignores duplicate event IDs", () => {
@@ -121,38 +117,23 @@ describe("delegation event store", () => {
     expect(recordsFromSessionEntries(entries)).toHaveLength(1);
   });
 
-  it("replays the latest v1 snapshot as a sealed Session and writes only v2", () => {
+  it("ignores holistic-delegation-v1 entries", () => {
     const legacy = {
-      version: 1, eventId: "old-event", delegationId: "d1", kind: "created",
+      version: 1, eventId: "v1-event", delegationId: "d1", kind: "created",
       at: delegation.updatedAt,
-      snapshot: { ...delegation, state: "working", resources: [
-        { kind: "pane", id: "old-pane", createdByExtension: true, ownershipToken: "secret" },
-      ] },
+      snapshot: { ...delegation, state: "working" },
     };
-    const latest = {
-      ...legacy,
-      eventId: "new-event",
-      kind: "transition",
-      at: "2026-01-02T00:00:00.000Z",
-      snapshot: { ...legacy.snapshot, state: "accepted", updatedAt: "2026-01-02T00:00:00.000Z", resources: [
-        { kind: "pane", id: "latest-pane", createdByExtension: true, ownershipToken: "secret" },
-      ] },
-    };
-    const append = vi.fn();
-    const store = new PiSessionDelegationStore([
-      { type: "custom", customType: LEGACY_STORE_CUSTOM_TYPE, data: legacy },
-      { type: "custom", customType: LEGACY_STORE_CUSTOM_TYPE, data: latest },
-    ], append);
+    const entries = [
+      { type: "custom", customType: "holistic-delegation-v1", data: legacy },
+      { type: "custom", customType: STORE_CUSTOM_TYPE, data: undefined },
+      { type: "message" },
+    ];
+
+    expect(recordsFromSessionEntries(entries)).toEqual([]);
+    const store = new PiSessionDelegationStore(entries, () => undefined);
     const repository = new DelegationRepository(store);
-    expect(repository.get("d1")?.sessionId).toBe("legacy-session-d1");
-    expect(repository.get("d1")?.state).toBe("accepted");
-    expect(repository.getSession("legacy-session-d1")).toMatchObject({
-      sealed: true,
-      state: "closed",
-      resources: [expect.objectContaining({ id: "latest-pane" })],
-    });
-    repository.save({ ...repository.get("d1")!, state: "failed" }, "transition");
-    expect(append).toHaveBeenCalledWith(STORE_CUSTOM_TYPE, expect.objectContaining({ version: 2, entity: "run" }));
+    expect(repository.list()).toEqual([]);
+    expect(repository.listSessions()).toEqual([]);
   });
 
   it("repairs a torn accepted-Run commit deterministically and idempotently", () => {

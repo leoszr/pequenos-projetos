@@ -20,7 +20,7 @@ TypeScript executa delegações persistentes pelo socket do Herdr.
   warm por padrão e `requiresCleanContext` explícito para contexto limpo.
 - mutações ordenadas por Agent Session, com confirmação otimista após I/O;
 - handoff JSON íntegro e versionado, com artifacts locais validados por tamanho,
-  media type e SHA-256; transcript é apenas diagnóstico para Runs novas.
+  media type e SHA-256; inspeção usa somente o manifest, sem transcript.
 
 ## Requisitos
 
