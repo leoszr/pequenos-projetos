@@ -24,6 +24,187 @@ typecheck e 18 arquivos/135 testes passaram, assim como validate, pack e audit
 conforme anotado na versão anterior deste arquivo. Ele não descreve o estado
 posterior a `17464b13`.
 
+## Etapa 3 — correção do assentamento idle|done (implementada, smoke pendente)
+
+- **Data:** 2026-08-05T15:31:00-03:00
+- **SHA base:** `efc42f5edc5c4ad57e46f5ebc3b0db4df08a86db`
+- **Diff acumulado (5 fontes/docs + testes):**
+  `a4a8e523ae0dd3b58a77cae2eba4e400bf72a6cc8fa277f9a4715af4cdc9bbcf`
+  (`git diff HEAD -- src/domain/handoff-cycle.ts src/domain/types.ts
+  tests/domain/handoff-cycle.test.ts DEBT.md
+  docs/research/holistic-process-assessment.md`).
+- **Node:** `v24.16.0`; **Pi:** `0.83.0`; **Herdr:** `0.8.0`, **protocol 19**.
+- Não houve smoke nesta rodada (pendente). Não houve suíte completa,
+  `npm run check`, commit ou push.
+
+### Causa raiz corrigida (validada no smoke bloqueado acima)
+
+Com Pi 0.83.0 + Herdr 0.8.0 (protocol 19), o agente dirigido por
+`agent.prompt` assenta após o turno com `agent_status=done`; `recordRuntimeStatus`
+só assentava com `status === "idle"`, então `handoff.settled` nunca era gravado
+e a run ficava travada em `working` (health `done`), bloqueando inspect/accept.
+
+### Correções aplicadas
+
+1. **Normalização do assentamento.** `idle` ou `done` assentam o handoff
+   somente com `handoff.working === true` no ciclo atual; `blocked`/`unknown`
+   nunca assentam; status terminal sem `working` não assenta.
+2. **Live confirmation nos dois estados.** `onInfrastructureEvent` aplica o
+   mesmo fluxo de `pane.get` (antes restrito a `idle`) também a eventos `done`;
+   evento `done` com leitura live `working` não assenta (o status live
+   substitui o evento antes da redução).
+3. **Snapshot/reload com a mesma semântica.** `reconcileSnapshot` usa o mesmo
+   predicado de assentamento; a repetição de um status já assentado é no-op
+   idempotente (sem nova mutação/Sequence).
+4. **Compatibilidade de store.** `pendingIdleConfirmation` persiste no store;
+   renomeá-lo exigiria migração incompatível, então o nome foi preservado e o
+   comentário em `src/domain/types.ts` foi atualizado para descrever o guard de
+   confirmação de assentamento (idle|done). O fluxo de escrita/limpeza do
+   guard é o mesmo para ambos os estados.
+5. **Docs stale.** Comentários em `src/domain/handoff-cycle.ts` (live-confirms
+   e `recordRuntimeStatus`), `DEBT.md` (mapeamento `agent_settled` → `idle` ou
+   `done`) e `docs/research/holistic-process-assessment.md` ("ordem
+   claim/settle (idle|done)") foram atualizados. O registro histórico do smoke
+   bloqueado nesta rodada não foi reescrito.
+
+### Testes de regressão executados (somente arquivos mínimos)
+
+```text
+npx vitest run tests/domain/handoff-cycle.test.ts   # 40 tests passed (33 + 7 novos)
+npx vitest run tests/domain/service.test.ts         # 35 tests passed (protege accept/cleanup)
+npx tsc --noEmit                                     # passou
+git diff --check                                     # passou
+```
+
+Cobertura nova em `handoff-cycle.test.ts`: (1) claim+working→done assenta e
+vira `ready_for_review`; (2) done antes do claim assenta e o claim posterior
+promove; (3) done sem `working` não assenta; (4) `blocked`/`unknown` nunca
+assentam; (5) evento `done` com live `done` assenta vs. evento `done` com live
+`working` não assenta; (6) snapshot/reload com `done` assenta e é idempotente
+(Sequence estável), combinando reload e idempotência sem duplicar cenários.
+Sem testes novos em service (nenhum cenário novo de accept/cleanup exigido).
+
+**Limitação real:** a correção está validada por testes de domínio/service e
+typecheck; o smoke integrado da Etapa 3 não foi repetido nesta rodada (aguarda
+próximo smoke). A Etapa 3 permanece em `PLAN.md`; `PLAN.md` não foi alterado.
+
+## Etapa 3 — smoke instalado único em efc42f5e (bloqueado)
+
+- **Data:** 2026-08-05 (15:03–15:18 UTC-3; 18:03–18:18 UTC)
+- **SHA base do checkout:** `efc42f5edc5c4ad57e46f5ebc3b0db4df08a86db` (HEAD, working
+  tree limpo antes e depois; nenhum arquivo alterado)
+- **Node:** `v24.16.0`; **Pi:** `0.83.0`; **Herdr:** `0.8.0`, client/server
+  compatíveis, **protocol 19**
+- **Código carregado no coordenador:** working tree do checkout em `efc42f5e`
+  pelo mecanismo oficial de desenvolvimento local
+  (`pi --no-extensions -e ./extensions/holistic-subagents.ts --no-skills
+  --skill ./skills/holistic-subagents`). Não há `efc42f5e` publicado; por isso a
+  instalação foi temporária e por carregamento, não por clone.
+- **Instalação persistente ao final (restaurada/confirmada intacta):**
+  `git:github.com/leoszr/holistic-subagents`, clone em
+  `~/.pi/agent/git/github.com/leoszr/holistic-subagents`, commit
+  `5be8838496c6d4db42d9b6bb3c1e9b5322144913`; `pi list` inalterado. Nada foi
+  instalado de forma persistente.
+
+### Harness
+
+- Coordenador real no Herdr: tab `w3M:tS` (label "Etapa3 smoke efc42f5e"),
+  pane `w3M:pW`, agente `coord-efc`; ambiente no pane: `HERDR_ENV=1`,
+  `HOLISTIC_SUBAGENT_DEPTH=` vazio, `HERDR_SOCKET_PATH=/home/leo/.config/herdr/herdr.sock`,
+  `HERDR_PANE_ID=w3M:pW`, `HERDR_TAB_ID=w3M:tS`, `HERDR_WORKSPACE_ID=w3M`,
+  `PI_OFFLINE=1`. `/holistic-mode on` confirmou `subagents: on`.
+- Check barato: **PASS** — as cinco tools (`holistic_create`, `holistic_list`,
+  `holistic_inspect`, `holistic_send`, `holistic_manage`) registradas; origem
+  confirmada como `./extensions/holistic-subagents.ts` via `-e`.
+- Detalhe do harness: `herdr pane send-text` não submete o comando (sem Enter);
+  o modo foi ativado com `herdr pane run`. `agent prompt` termina com status
+  `done` (não `idle`) no Pi 0.83.0/Herdr 0.8.0; usou-se `--wait` sem `--until
+  idle`.
+
+### Comandos executados
+
+```text
+herdr tab create --workspace w3M --cwd <checkout> --label "Etapa3 smoke efc42f5e" --no-focus --env HERDR_ENV=1 --env HOLISTIC_SUBAGENT_DEPTH= --env PI_OFFLINE=1
+herdr agent start coord-efc --kind pi --pane w3M:pW --timeout 120000 -- --no-extensions -e ./extensions/holistic-subagents.ts --no-skills --skill ./skills/holistic-subagents
+herdr pane run w3M:pW '/holistic-mode on'
+herdr agent prompt coord-efc '<check barato>' --wait --timeout 180000
+herdr agent prompt coord-efc '<missão fase 1>' --wait --timeout 480000
+herdr agent prompt coord-efc '<fase 2: evidência de bloqueio + cleanup>' --wait --timeout 240000
+herdr agent prompt coord-efc '<fase 3: abandono explícito close>' --wait --timeout 180000
+herdr tab close w3M:tS   # somente o tab do harness; não é evidência do critério
+```
+
+### Run única executada
+
+- **Run:** `2c3df447-46e3-4846-8966-46c4005c82ca` (name `smoke-efc42f5e`),
+  topology `tab` dedicada `w3M:tT`/pane `w3M:pX`; filho
+  `smoke-efc42f5e-841420af`; Luna `bounded`, effort `auto`→`xhigh`.
+- Missão mínima e determinística: escrever `smoke.txt` (conteúdo `efc42f5e-ok`)
+  no root de artifacts, publicar manifest JSON, enviar `HOLISTIC_HANDOFF_READY`,
+  `sleep 10`, encerrar turno; proibido rodar testes/npm/git ou perguntar.
+  Nenhuma nova entrega de run foi feita; nenhum retry cego foi executado.
+
+### Linha do tempo observada (ledger do coordenador, timestamps UTC)
+
+| timestamp | kind | estado | health | claimed | settled |
+|---|---|---|---|---|---|
+| 18:08:49.503Z | created | starting | — | — | — |
+| 18:08:56.605Z | transition | working | working | — | — |
+| 18:09:43.983Z | health | **working** | working | **true** | (vazio) |
+| 18:10:10.544Z | health | working | **done** | true | (vazio) |
+| 18:17:50.431Z | transition | cancelled | failed | true | (vazio) |
+
+O coordenador recebeu às 18:09:46 a notificação transformada
+`Delegation 2c3df447… claimed a handoff and is waiting for agent_settled before
+review`, com o run ainda `working`. O filho reportou
+`Concluído: artefatos publicados e callback HOLISTIC_HANDOFF_READY enviado` e
+ficou vivo no prompt; `herdr agent explain` classifica o pane como `idle`, mas o
+`agent_status` consumido pela extensão (eventos/snapshot) é `done`.
+
+### Resultado por critério
+
+- **create/working: PASS** — `holistic_create` retornou a run em `working`
+  (18:08:59), tab dedicada `w3M:tT` criada.
+- **claim antes de settled: PASS** — claim persistido (`claimed=true`) às
+  18:09:43.983Z com o run ainda `working` e `settled` vazio; notificação
+  "waiting for agent_settled" chegou ao coordenador às 18:09:46.
+- **inspect/accept: BLOQUEADO** — o run nunca avançou para `ready_for_review`
+  (permaneceu `working`, health `done`, por >3 min de polling); `holistic_inspect`
+  retornou `HANDOFF_CLAIM_PENDING: Wait for the corresponding child
+  agent_settled event before inspecting`.
+- **reload do coordenador com claim pendente: BLOQUEADO** — não houve
+  `ready_for_review` para servir de claim pendente; o reload não foi executado
+  porque o critério dependente não existiu (sem repetição de smoke).
+- **cleanup integrado de tab: PASS** — `holistic_manage cleanup` foi recusado
+  com `SESSION_BUSY` (run ativa); o abandono explícito seguro
+  `holistic_manage close` cancelou a run (`cancelled`) e o cleanup integrado
+  removeu a tab dedicada `w3M:tT` e o root temporário
+  `/tmp/holistic-841420af-…-LCrCmT` (verificado por snapshot). Nenhum
+  `herdr tab close` foi usado como evidência deste critério.
+
+### Causa raiz do bloqueio
+
+Com Pi 0.83.0 + Herdr 0.8.0 (protocol 19), um agente dirigido por
+`agent.prompt` assenta após o turno com `agent_status=done` (não `idle`).
+`recordRuntimeStatus` em `src/domain/handoff-cycle.ts` só assenta com
+`status === "idle"` (`const settles = status === "idle" && …`), então
+`handoff.settled` nunca é gravado, a run trava em `working` (health `done`) e o
+claim fica pendente para sempre. Isso torna `inspect`/`accept` inacessíveis
+(`HANDOFF_CLAIM_PENDING`) e bloqueia `cleanup` (`SESSION_BUSY`). O mesmo
+comportamento de "done pós-turno" já aparecera na tentativa anterior (R1:
+`agent prompt --wait --until idle` deu timeout com a sessão concluída).
+
+### Limitações
+
+- Uma única run nova foi executada; nada foi reentregue nem repetido.
+- Não houve alteração de código, testes unitários, typecheck, `npm run check`,
+  commit ou push.
+- A Etapa 3 permanece em `PLAN.md` (critérios de inspect/accept e reload não
+  passaram). `PLAN.md` não foi modificado.
+- O fechamento direto `herdr tab close w3M:tS` removeu apenas o tab do harness,
+  sem valor de evidência para o critério de cleanup.
+- Snapshot final: somente os tabs preexistentes `w3M:t1`, `w3M:t5` e `w3P:t1`.
+
 ## Etapa 3 — smoke instalado atual (bloqueado)
 
 - **SHA base do checkout:** `56dd9cbbd6eba6d79ad6ba52fc0f58cfc027599b`

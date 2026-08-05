@@ -32,12 +32,14 @@ alegação, mas a Run só fica efetivamente revisável — e só recebe um
 ### Resolução aplicada
 
 `HOLISTIC_HANDOFF_READY` registra a revisão da alegação sem tornar a Run
-revisável. A integração Pi do Herdr mapeia `agent_settled` para `idle`; a
-máquina de estados promove a Run somente quando as latches de trabalho,
-alegação e settled pertencem à mesma revisão. A reconciliação persiste essas
-latches, inclusive após `/reload`; um novo prompt ou pergunta inicia outra
-revisão, enquanto um status `working` invalida somente o settled anterior
-antes de reutilizar um `idle`.
+revisável. A integração Pi do Herdr mapeia `agent_settled` para `idle` ou
+`done` (protocol 19+); ambos assentam somente com `handoff.working`
+correlacionado no ciclo atual, e `blocked`/`unknown` nunca assentam. A máquina
+de estados promove a Run somente quando as latches de trabalho, alegação e
+settled pertencem à mesma revisão. A reconciliação persiste essas latches,
+inclusive após `/reload`; um novo prompt ou pergunta inicia outra revisão,
+enquanto um status `working` invalida somente o settled anterior antes de
+reutilizar um assento de `idle`/`done`.
 
 `holistic_inspect` rejeita a revisão da alegação pendente e só emite
 `AcceptanceTicket` para `ready_for_review`.

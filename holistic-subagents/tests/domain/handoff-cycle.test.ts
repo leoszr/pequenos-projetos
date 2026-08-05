@@ -216,6 +216,10 @@ function workingEvent(paneId = "p1") {
   return { event: "pane.agent_status_changed", data: { pane_id: paneId, agent_status: "working" } };
 }
 
+function doneEvent(paneId = "p1") {
+  return { event: "pane.agent_status_changed", data: { pane_id: paneId, agent_status: "done" } };
+}
+
 describe("HandoffCycle > callback authentication", () => {
   it("authenticates token, pane and cycle and rejects invalid signals", async () => {
     const fx = await fixture();
@@ -333,6 +337,69 @@ describe("HandoffCycle > claim and settled correlation", () => {
       .toBe("ready_for_review");
     expect((await fx.cycle.onInfrastructureEvent(idleEvent()))?.state).toBe("ready_for_review");
     expect(fx.repository.getSession("as1")!.mutationSequence).toBe(sequence);
+  });
+
+  it("settles a claimed handoff on a done status correlated with working", async () => {
+    const fx = await fixture();
+    fx.requestMock.mockResolvedValue({ type: "ok", pane: { agent_status: "done" } });
+    await fx.cycle.onInfrastructureEvent(workingEvent());
+    fx.cycle.handleCallbackInput(claimSignal(fx.run));
+
+    const settled = await fx.cycle.onInfrastructureEvent(doneEvent());
+    expect(settled).toMatchObject({ state: "ready_for_review", health: "done" });
+    expect(settled?.handoff).toMatchObject({ claimed: true, working: true, settled: true });
+  });
+
+  it("settles on done before the claim and promotes when the claim arrives", async () => {
+    const fx = await fixture();
+    fx.requestMock.mockResolvedValue({ type: "ok", pane: { agent_status: "done" } });
+    await fx.cycle.onInfrastructureEvent(workingEvent());
+
+    const settled = await fx.cycle.onInfrastructureEvent(doneEvent());
+    expect(settled).toMatchObject({ state: "working", health: "done" });
+    expect(settled?.handoff?.settled).toBe(true);
+
+    const claimed = fx.cycle.handleCallbackInput(claimSignal(fx.run));
+    expect(claimed.delegation?.state).toBe("ready_for_review");
+  });
+
+  it("does not settle a done status without observed working", async () => {
+    const fx = await fixture();
+    fx.requestMock.mockResolvedValue({ type: "ok", pane: { agent_status: "done" } });
+    fx.cycle.handleCallbackInput(claimSignal(fx.run));
+
+    const updated = await fx.cycle.onInfrastructureEvent(doneEvent());
+    expect(updated).toMatchObject({ state: "working", health: "done" });
+    expect(updated?.handoff?.settled).toBeUndefined();
+    expect(updated?.handoff?.working).toBeUndefined();
+  });
+
+  it("does not settle an event done whose live read is working", async () => {
+    const fx = await fixture();
+    fx.requestMock.mockResolvedValue({ type: "ok", pane: { agent_status: "working" } });
+    await fx.cycle.onInfrastructureEvent(workingEvent());
+    fx.cycle.handleCallbackInput(claimSignal(fx.run));
+
+    const updated = await fx.cycle.onInfrastructureEvent(doneEvent());
+    expect(updated).toMatchObject({ state: "working", health: "working" });
+    expect(updated?.handoff?.settled).toBeUndefined();
+  });
+
+  it("never settles on blocked or unknown runtime status", async () => {
+    const fx = await fixture();
+    await fx.cycle.onInfrastructureEvent(workingEvent());
+    fx.cycle.handleCallbackInput(claimSignal(fx.run));
+
+    await fx.cycle.onInfrastructureEvent({
+      event: "pane.agent_status_changed",
+      data: { pane_id: "p1", agent_status: "blocked" },
+    });
+    await fx.cycle.onInfrastructureEvent({
+      event: "pane.agent_status_changed",
+      data: { pane_id: "p1", agent_status: "unknown" },
+    });
+    expect(fx.repository.get("d1")).toMatchObject({ state: "working" });
+    expect(fx.repository.get("d1")?.handoff?.settled).toBeUndefined();
   });
 });
 
@@ -948,6 +1015,36 @@ describe("HandoffCycle > Herdr runtime status", () => {
       state: "ready_for_review",
       health: "idle",
     });
+  });
+
+  it("settles a claimed handoff from a done reload snapshot and is idempotent", async () => {
+    const store = new InMemoryDelegationStore();
+    const fx = await fixture(store);
+    await fx.cycle.onInfrastructureEvent(workingEvent());
+    fx.cycle.handleCallbackInput(claimSignal(fx.run));
+
+    const reloaded = await fixture(store);
+    const snapshot = {
+      protocol: 17,
+      panes: [{
+        pane_id: "p1",
+        workspace_id: "w",
+        tab_id: "t",
+        agent_status: "done" as const,
+        tokens: { owner: "owner" },
+      }],
+    };
+    reloaded.cycle.reconcileSnapshot(snapshot);
+    expect(reloaded.repository.get("d1")).toMatchObject({
+      state: "ready_for_review",
+      health: "done",
+      handoff: { claimed: true, working: true, settled: true },
+    });
+    const sequence = reloaded.repository.getSession("as1")!.mutationSequence;
+
+    reloaded.cycle.reconcileSnapshot(snapshot);
+    expect(reloaded.repository.get("d1")?.state).toBe("ready_for_review");
+    expect(reloaded.repository.getSession("as1")!.mutationSequence).toBe(sequence);
   });
 
   it("routes warm-pane events only to the Session active Run", async () => {

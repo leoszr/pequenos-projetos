@@ -194,7 +194,12 @@ export interface HandoffCycle {
   manifestSha256?: string;
   /** Validated structured evidence captured by holistic_inspect. */
   manifest?: HandoffManifest;
-  /** Guards an in-flight live confirmation of an idle runtime event. */
+  /**
+   * Guards an in-flight live confirmation of a settlement runtime event
+   * (idle or done). The name is historical but the field is persisted in the
+   * store, so it is kept for compatibility; it is written and cleared by the
+   * same live-confirmation flow regardless of which status triggered it.
+   */
   pendingIdleConfirmation?: string;
   /** Herdr observed Pi working during this cycle. */
   working?: true;

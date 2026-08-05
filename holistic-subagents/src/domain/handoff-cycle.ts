@@ -615,11 +615,11 @@ export class HandoffCycle {
     return { updated, orphanPaneIds };
   }
 
-  /** Infrastructure events: live-confirms idle settlements, fails exited panes. */
+  /** Infrastructure events: live-confirms idle/done settlements, fails exited panes. */
   async onInfrastructureEvent(event: HerdrSubscriptionEvent): Promise<Delegation | undefined> {
     const data = (event.data ?? event) as Record<string, unknown>;
     const paneId = typeof data.pane_id === "string" ? data.pane_id : undefined;
-    if (paneId && data.agent_status === "idle") {
+    if (paneId && (data.agent_status === "idle" || data.agent_status === "done")) {
       const session = this.#repository.listSessions().find((candidate) =>
         candidate.resources.some((resource) => resource.kind === "pane" && resource.id === paneId),
       );
@@ -873,8 +873,12 @@ function clearDispatchUncertainty(delegation: Delegation): Delegation {
 }
 
 /**
- * Records Herdr's current runtime status. Pi maps agent_settled to idle, but
- * idle is only a settlement after this same revision was observed working.
+ * Records Herdr's current runtime status. Pi maps agent_settled to idle or
+ * done; both settle the handoff, but only after this same cycle was observed
+ * working (handoff.working). blocked/unknown never settle, and a terminal
+ * status without observed working does not settle either. Settlement applies
+ * identically to live events and snapshot/reload reconciliation, and is
+ * idempotent (a repeated settled status is a no-op).
  */
 function recordRuntimeStatus(
   delegation: Delegation,
@@ -903,7 +907,7 @@ function recordRuntimeStatus(
     };
   }
 
-  const settles = status === "idle"
+  const settles = (status === "idle" || status === "done")
     && delegation.handoff?.working === true
     && delegation.handoff.settled !== true;
   if (delegation.health === status && !settles) return delegation;
