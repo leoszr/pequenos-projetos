@@ -217,6 +217,15 @@ export class HerdrTopologyManager {
     }
 
     if (!initialPaneId) throw new Error(`Unsupported Herdr topology: ${spec.topology}`);
+    // Persist ownership before starting Pi. `agent.start` may return a pane
+    // that never reaches interactive_ready; cleanup must still be able to
+    // prove that every partial resource belongs to this delegation.
+    for (const resource of resources.filter((item) => item.kind === "pane")) {
+      await this.#tagPaneOwnership(resource.id, spec, signal);
+    }
+    if (spec.topology === "worktree") {
+      await this.#tagWorkspaceOwnership(targetWorkspaceId, spec, signal);
+    }
     const [executable, ...args] = spec.argv;
     if (executable !== "pi") {
       throw new Error(`Unsupported Herdr agent executable: ${executable ?? "missing"}`);
@@ -233,12 +242,6 @@ export class HerdrTopologyManager {
     await add({ kind: "pane", id: agent.pane_id, label: spec.name });
     await add({ kind: "process", id: agent.pane_id, label: "pi" });
 
-    for (const resource of resources.filter((item) => item.kind === "pane")) {
-      await this.#tagPaneOwnership(resource.id, spec, signal);
-    }
-    if (spec.topology === "worktree") {
-      await this.#tagWorkspaceOwnership(agent.workspace_id, spec, signal);
-    }
     await this.#client.request(
       "agent.prompt",
       {
@@ -286,9 +289,10 @@ export class HerdrTopologyManager {
     signal?: AbortSignal,
   ): Promise<AgentInfo> {
     if (initial.interactive_ready && initial.agent_session) return initial;
-    // Herdr 0.7.5 can finish agent.start just before Pi's session hook report.
-    // Bound this startup barrier; normal supervision remains event-driven.
-    for (let attempt = 0; attempt < 40; attempt += 1) {
+    // Herdr can report launch_pending for several seconds after agent.start;
+    // Pi's session hook publishes the session identity asynchronously. Keep a
+    // bounded barrier for that hook; normal supervision remains event-driven.
+    for (let attempt = 0; attempt < 80; attempt += 1) {
       await delay(250, signal);
       const result = await this.#client.request<AgentInfoResult>(
         "agent.get",

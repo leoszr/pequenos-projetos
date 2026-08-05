@@ -4,6 +4,7 @@ import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { DelegationService } from "../../src/domain/service.ts";
+import type { HerdrSnapshot } from "../../src/herdr/client.ts";
 import {
   DelegationRepository,
   InMemoryDelegationStore,
@@ -85,7 +86,10 @@ function service(available = { value: [
   const paneLocations = new Map<string, { pane_id: string; tab_id: string; workspace_id: string }>([
     ["parent", { pane_id: "parent", tab_id: "t1", workspace_id: "w1" }],
   ]);
-  const requestMock = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+  const requestMock = vi.fn(async (
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> => {
     if (method === "pane.split") {
       const target = paneLocations.get(String(params?.target_pane_id));
       const pane = {
@@ -631,9 +635,14 @@ describe("DelegationService", () => {
     expect(correcting).toMatchObject({
       state: "working",
       health: "working",
-      handoff: { working: true },
+      handoff: { id: expect.any(String) },
     });
+    expect(correcting.handoff?.working).toBeUndefined();
     const paneId = run.resources.find((resource) => resource.kind === "pane")!.id;
+    await fixture.value.onInfrastructureEvent({
+      event: "pane.agent_status_changed",
+      data: { pane_id: paneId, agent_status: "working" },
+    });
     const claim = await publishManifest(fixture.repository, correcting);
     const claimed = fixture.value.handleCallbackInput(
       `[HOLISTIC_HANDOFF_READY] delegation=${run.id} pane=${paneId} token=${run.callbackToken} cycle=${claim.cycleId} manifest=${claim.manifestId} sha256=${claim.sha256}`,
@@ -661,16 +670,16 @@ describe("DelegationService", () => {
       state: "working",
       revision: 2,
       acceptanceTicket: undefined,
-      handoff: { working: true },
     });
+    expect(followedUp.handoff?.working).toBeUndefined();
     expect(fixture.requestMock).toHaveBeenLastCalledWith(
       "agent.prompt",
-      expect.objectContaining({ wait: { until: ["working"], timeout_ms: 30_000 } }),
+      expect.not.objectContaining({ wait: expect.anything() }),
       expect.objectContaining({ timeoutMs: 35_000 }),
     );
   });
 
-  it("fails the Run and Session when a pre-dispatch follow-up cannot be confirmed", async () => {
+  it("keeps the Run uncertain when a follow-up dispatch cannot be confirmed", async () => {
     const fixture = service();
     const run = await fixture.value.create(request());
     fixture.requestMock.mockImplementationOnce(async () => {
@@ -679,14 +688,137 @@ describe("DelegationService", () => {
 
     await expect(fixture.value.send(run.id, "continue")).rejects.toThrow("socket disconnected");
     expect(fixture.repository.get(run.id)).toMatchObject({
-      state: "failed",
-      health: "failed",
+      state: "working",
+      health: "dispatch_uncertain",
+      handoff: { effectMayHaveOccurred: true },
       failure: expect.stringContaining("agent.prompt failed after starting revision 2"),
     });
     expect(fixture.repository.getSession(run.sessionId)).toMatchObject({
-      state: "failed",
-      activeRunId: undefined,
+      state: "busy",
+      activeRunId: run.id,
     });
+  });
+
+  it("reconciles an uncertain dispatch by fetching the snapshot internally", async () => {
+    const fixture = service();
+    const run = await fixture.value.create(request());
+    fixture.requestMock.mockImplementationOnce(async () => {
+      throw new Error("request timeout");
+    });
+    await expect(fixture.value.send(run.id, "continue")).rejects.toThrow("request timeout");
+    expect(fixture.repository.get(run.id)?.handoff?.effectMayHaveOccurred).toBe(true);
+
+    const claim = await publishManifest(fixture.repository, fixture.repository.get(run.id)!);
+    fixture.repository.save({
+      ...fixture.repository.get(run.id)!,
+      handoff: {
+        ...fixture.repository.get(run.id)!.handoff!,
+        claimed: true,
+        manifestId: claim.manifestId,
+        manifestSha256: claim.sha256,
+      },
+    }, "transition");
+    const session = fixture.repository.getSession(run.sessionId)!;
+    fixture.repository.saveSession({
+      ...session,
+      resources: [
+        ...session.resources,
+        { kind: "workspace", id: "w1", createdByExtension: true, ownershipToken: run.callbackToken },
+      ],
+    }, "transition");
+    const defaultImpl = fixture.requestMock.getMockImplementation()!;
+    const snapshot: HerdrSnapshot = {
+      protocol: 19,
+      panes: [{
+        pane_id: "p1",
+        tab_id: "t2",
+        workspace_id: "w1",
+        agent_status: "idle",
+        tokens: { delegation: session.ownershipId, owner: run.callbackToken.slice(0, 32) },
+      }],
+    };
+    fixture.requestMock.mockImplementation(async (method: string, params?: Record<string, unknown>) =>
+      method === "session.snapshot" ? { snapshot } : defaultImpl(method, params),
+    );
+
+    const reconciled = await fixture.value.reconcileDispatch(run.id);
+    expect(fixture.requestMock).toHaveBeenCalledWith("session.snapshot", {});
+    expect(reconciled.handoff?.effectMayHaveOccurred).toBeUndefined();
+    expect(reconciled.handoff?.dispatchPending).toBeUndefined();
+    expect(reconciled.handoff?.claimed).toBe(true);
+  });
+
+  it("releases only conclusive uncertainty during startup reconciliation", async () => {
+    const fixture = service();
+    const run = await fixture.value.create(request());
+    fixture.requestMock.mockImplementationOnce(async () => {
+      throw new Error("request timeout");
+    });
+    await expect(fixture.value.send(run.id, "continue")).rejects.toThrow("request timeout");
+
+    const claim = await publishManifest(fixture.repository, fixture.repository.get(run.id)!);
+    fixture.repository.save({
+      ...fixture.repository.get(run.id)!,
+      handoff: {
+        ...fixture.repository.get(run.id)!.handoff!,
+        claimed: true,
+        manifestId: claim.manifestId,
+        manifestSha256: claim.sha256,
+      },
+    }, "transition");
+    const session = fixture.repository.getSession(run.sessionId)!;
+    fixture.repository.saveSession({
+      ...session,
+      resources: [
+        ...session.resources,
+        { kind: "workspace", id: "w1", createdByExtension: true, ownershipToken: run.callbackToken },
+      ],
+    }, "transition");
+
+    const defaultImpl = fixture.requestMock.getMockImplementation()!;
+    const snapshot: HerdrSnapshot = {
+      protocol: 19,
+      panes: [{
+        pane_id: "p1",
+        tab_id: "t2",
+        workspace_id: "w1",
+        agent_status: "idle",
+        tokens: { delegation: session.ownershipId, owner: run.callbackToken.slice(0, 32) },
+      }],
+    };
+    fixture.requestMock.mockImplementation(async (method: string, params?: Record<string, unknown>) =>
+      method === "session.snapshot" ? { snapshot } : defaultImpl(method, params),
+    );
+    await fixture.value.reconcileStartup();
+    expect(fixture.repository.get(run.id)?.handoff?.effectMayHaveOccurred).toBeUndefined();
+  });
+
+  it("keeps an uncertain dispatch blocked during startup reconciliation without a claim", async () => {
+    const fixture = service();
+    const run = await fixture.value.create(request());
+    fixture.requestMock.mockImplementationOnce(async () => {
+      throw new Error("request timeout");
+    });
+    await expect(fixture.value.send(run.id, "continue")).rejects.toThrow("request timeout");
+
+    const session = fixture.repository.getSession(run.sessionId)!;
+    const defaultImpl = fixture.requestMock.getMockImplementation()!;
+    const snapshot: HerdrSnapshot = {
+      protocol: 19,
+      panes: [{
+        pane_id: "p1",
+        tab_id: "t2",
+        workspace_id: "w1",
+        agent_status: "idle",
+        tokens: { delegation: session.ownershipId, owner: run.callbackToken.slice(0, 32) },
+      }],
+    };
+    fixture.requestMock.mockImplementation(async (method: string, params?: Record<string, unknown>) =>
+      method === "session.snapshot" ? { snapshot } : defaultImpl(method, params),
+    );
+    await fixture.value.reconcileStartup();
+    expect(fixture.repository.get(run.id)?.handoff?.effectMayHaveOccurred).toBe(true);
+    await expect(fixture.value.send(run.id, "retry")).rejects.toThrow("HANDOFF_RECONCILIATION_REQUIRED");
   });
 
   it("cleans Session resources after its Run is terminal", async () => {

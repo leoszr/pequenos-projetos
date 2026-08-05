@@ -322,6 +322,18 @@ export class DelegationService {
     return this.#cycles.dispatch(id, message, options, signal);
   }
 
+  /**
+   * High-intention recovery entry for a follow-up dispatch left uncertain by
+   * a timeout/error. The Herdr snapshot is fetched and validated internally;
+   * conclusive evidence (a valid claim for the current cycle) plus complete
+   * pane ownership and session/tab/workspace coherence releases the cycle;
+   * anything less keeps it blocked. It never retries automatically — abandon
+   * explicitly through manage fail/close.
+   */
+  async reconcileDispatch(runId: string): Promise<Delegation> {
+    return this.#cycles.reconcileDispatch(runId);
+  }
+
   manage(
     id: string,
     action: ManageAction,
@@ -443,8 +455,35 @@ export class DelegationService {
     })();
   }
 
-  reconcile(snapshot: HerdrSnapshot): ReconciliationResult {
-    return this.#cycles.reconcileSnapshot(snapshot);
+  /**
+   * Startup recovery: the coordinator runtime calls this once after
+   * connecting. It fetches and validates the Herdr snapshot internally, runs
+   * the regular snapshot reconciliation and then resolves any dispatch left
+   * uncertain by a crash/reload through the same conclusive flow as
+   * reconcileDispatch (valid claim for the current cycle, validated
+   * manifest/hash and complete correlated ownership). It never retries
+   * automatically and exposes no new tool.
+   */
+  async reconcileStartup(): Promise<ReconciliationResult> {
+    const result = await this.#herdr.request<{ snapshot?: HerdrSnapshot }>(
+      "session.snapshot",
+      {},
+    );
+    const snapshot = result?.snapshot;
+    if (!snapshot || !Array.isArray(snapshot.panes)) {
+      throw new Error("Herdr snapshot is incomplete; coordinator runtime was not reconciled");
+    }
+    const outcome = this.#cycles.reconcileSnapshot(snapshot);
+    for (const delegation of this.#repository.list()) {
+      if (!delegation.handoff?.effectMayHaveOccurred || !delegation.handoff.claimed) continue;
+      try {
+        await this.#cycles.reconcileDispatch(delegation.id);
+      } catch {
+        // Preserve uncertainty; explicit abandonment or a later conclusive
+        // snapshot may still resolve it.
+      }
+    }
+    return outcome;
   }
 
   onInfrastructureEvent(event: HerdrSubscriptionEvent): Promise<Delegation | undefined> {

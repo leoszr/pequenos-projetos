@@ -170,6 +170,37 @@ export class DelegationRepository {
         this.#quarantineOrphan(session, `active Run ${session.activeRunId} is missing`);
         continue;
       }
+      if (run.handoff?.dispatchPending) {
+        // A reload/crash orphans any in-flight follow-up dispatch: the process
+        // that owned the confirm is gone, so delivery is uncertain. A
+        // persisted claim, textual hash or ready_for_review state is never
+        // conclusive on replay: the claim is preserved untouched and retry
+        // stays blocked until startup reconciliation validates the manifest
+        // hash and the complete correlated ownership.
+        const now = new Date().toISOString();
+        const repaired: Delegation = {
+          ...run,
+          handoff: {
+            ...run.handoff,
+            dispatchPending: undefined,
+            effectMayHaveOccurred: true,
+          },
+          failure: "follow-up dispatch was interrupted by a coordinator reload; delivery is uncertain",
+          health: "dispatch_uncertain",
+          updatedAt: now,
+        };
+        this.#runs.set(repaired.id, structuredClone(repaired));
+        this.#store.append(runRecord(repaired, "transition", now));
+        const repairedSession: AgentSession = {
+          ...session,
+          health: "dispatch_uncertain",
+          failure: repaired.failure,
+          mutationSequence: session.mutationSequence + 1,
+          updatedAt: now,
+        };
+        this.#sessions.set(repairedSession.id, structuredClone(repairedSession));
+        this.#store.append(sessionRecord(repairedSession, "transition", now));
+      }
       if (!["accepted", "failed", "cancelled"].includes(run.state)) continue;
       const accepted = run.state === "accepted";
       const repaired: AgentSession = {

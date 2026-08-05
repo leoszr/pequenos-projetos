@@ -76,6 +76,29 @@ describe("cleanup", () => {
     );
   });
 
+  it("does not close a partial pane when ownership metadata is foreign", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "pane.get") {
+        return { pane: { tokens: { delegation: "other-run", owner: "other-owner" } } };
+      }
+      return { type: "ok" };
+    });
+    const cleanup = new DelegationCleanup(
+      { request } as never,
+      { run: vi.fn(async () => ({ stdout: "", stderr: "", code: 0 })) },
+    );
+    const run = delegation();
+    run.request = { ...run.request, topology: "tab", authority: { mode: "read_only", allowedPaths: [] } };
+    run.resources = [
+      { kind: "tab", id: "t-partial", createdByExtension: true, ownershipToken: "owner" },
+      { kind: "pane", id: "p-partial", createdByExtension: true, ownershipToken: "owner" },
+    ];
+
+    await expect(cleanup.cleanup(run, { onResource: vi.fn() })).rejects.toBeInstanceOf(CleanupBlockedError);
+    expect(request).not.toHaveBeenCalledWith("pane.close", expect.anything());
+    expect(request).not.toHaveBeenCalledWith("tab.close", expect.anything());
+  });
+
   it("closes a shared-tab pane without closing the shared tab", async () => {
     const request = vi.fn(async (method: string) => {
       if (method === "pane.get") {

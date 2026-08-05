@@ -192,6 +192,10 @@ export interface HandoffCycle {
   working?: true;
   /** Herdr observed Pi settle after working during this cycle. */
   settled?: true;
+  /** A follow-up dispatch is in flight; a concurrent dispatch must not send. */
+  dispatchPending?: true;
+  /** A follow-up request may have reached Herdr after its response timed out. */
+  effectMayHaveOccurred?: true;
 }
 
 export interface ArtifactRootRegistration {

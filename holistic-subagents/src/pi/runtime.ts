@@ -5,11 +5,9 @@ import type {
 
 import { DelegationService } from "../domain/service.ts";
 import { isActiveState } from "../domain/state-machine.ts";
-import { isAgentRuntimeStatus } from "../domain/types.ts";
 import { DelegationRepository, PiSessionDelegationStore } from "../domain/store.ts";
 import type { SessionEntryLike } from "../domain/types.ts";
 import { HerdrClient, type HerdrSubscriptionEvent } from "../herdr/client.ts";
-import type { HerdrSnapshot } from "../herdr/client.ts";
 import type { AvailableModel, ModelPolicyResolver } from "../models/policy.ts";
 import type { CommandRunner } from "../security/authority.ts";
 
@@ -34,15 +32,6 @@ export function createInfrastructureEventHandler(
       ctx.ui.notify(`Holistic infrastructure event rejected: ${reason}`, "error");
     }
   };
-}
-
-function isSafeReconciliationSnapshot(snapshot: HerdrSnapshot): boolean {
-  return Array.isArray(snapshot.panes)
-    && snapshot.panes.every((pane) =>
-      typeof pane?.pane_id === "string"
-      && pane.pane_id.length > 0
-      && isAgentRuntimeStatus(pane.agent_status),
-    );
 }
 
 export async function createCoordinatorRuntime(
@@ -81,11 +70,8 @@ export async function createCoordinatorRuntime(
     availableModels: () => availableModels(ctx),
     modelPolicy,
   });
-  const snapshot = await client.connect();
-  if (!isSafeReconciliationSnapshot(snapshot)) {
-    throw new Error("Herdr snapshot is incomplete; coordinator runtime was not reconciled");
-  }
-  service.reconcile(snapshot);
+  await client.connect();
+  await service.reconcileStartup();
   const handleEvent = createInfrastructureEventHandler(service, ctx, onChange);
   const unsubscribers = new Map<string, () => void>();
   const runtime: CoordinatorRuntime = {

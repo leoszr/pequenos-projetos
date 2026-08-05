@@ -5,6 +5,7 @@ import {
   type HerdrRequester,
   type LaunchSpec,
 } from "../../src/herdr/topologies.ts";
+import { HerdrRequestError } from "../../src/herdr/client.ts";
 
 function spec(topology: "pane" | "tab" | "worktree"): LaunchSpec {
   return {
@@ -24,8 +25,9 @@ function spec(topology: "pane" | "tab" | "worktree"): LaunchSpec {
   };
 }
 
-function requester(topology: "pane" | "tab" | "worktree") {
+function requester(topology: "pane" | "tab" | "worktree", failStartup = false, readyAfter = 0) {
   const methods: string[] = [];
+  let agentGets = 0;
   const panes = new Map([
     ["p-parent", { pane_id: "p-parent", tab_id: "t-parent", workspace_id: "w-parent" }],
     ["p-anchor", { pane_id: "p-anchor", tab_id: "t-shared", workspace_id: "w-parent" }],
@@ -64,6 +66,7 @@ function requester(topology: "pane" | "tab" | "worktree") {
       };
     }
     if (method === "agent.start") {
+      if (failStartup) throw new HerdrRequestError("startup failed", "agent_start_failed");
       const pane = panes.get(String(params?.pane_id)) ?? {
         pane_id: "p-root",
         tab_id: "t-new",
@@ -74,8 +77,24 @@ function requester(topology: "pane" | "tab" | "worktree") {
         agent: {
           ...pane,
           agent_status: "idle",
-          interactive_ready: true,
-          agent_session: { agent: "pi", value: "/tmp/session.jsonl" },
+          ...(readyAfter === 0
+            ? { interactive_ready: true, agent_session: { agent: "pi", value: "/tmp/session.jsonl" } }
+            : {}),
+        },
+      };
+    }
+    if (method === "agent.get") {
+      agentGets += 1;
+      return {
+        type: "agent_info",
+        agent: {
+          pane_id: "p-root",
+          tab_id: "t-new",
+          workspace_id: "w-parent",
+          agent_status: "idle",
+          ...(agentGets >= readyAfter
+            ? { interactive_ready: true, agent_session: { agent: "pi", value: "/tmp/session.jsonl" } }
+            : {}),
         },
       };
     }
@@ -98,7 +117,7 @@ describe("HerdrTopologyManager", () => {
       id: "t-new",
       shared: true,
     }));
-    expect(client.methods.slice(0, 3)).toEqual(["tab.create", "pane.process_info", "agent.start"]);
+    expect(client.methods.slice(0, 4)).toEqual(["tab.create", "pane.report_metadata", "pane.process_info", "agent.start"]);
     expect(client.methods.indexOf("agent.start")).toBeLessThan(client.methods.indexOf("agent.prompt"));
     expect(client.methods).toContain("pane.report_metadata");
     expect(client.request).toHaveBeenCalledWith(
@@ -116,7 +135,7 @@ describe("HerdrTopologyManager", () => {
     };
     const result = await new HerdrTopologyManager(client).launch(input);
     expect(result).toMatchObject({ paneId: "p-agent", tabId: "t-shared" });
-    expect(client.methods.slice(0, 3)).toEqual(["pane.split", "pane.process_info", "agent.start"]);
+    expect(client.methods.slice(0, 4)).toEqual(["pane.split", "pane.report_metadata", "pane.process_info", "agent.start"]);
     expect(client.request).toHaveBeenCalledWith(
       "pane.split",
       expect.objectContaining({ target_pane_id: "p-anchor", focus: false }),
@@ -129,9 +148,33 @@ describe("HerdrTopologyManager", () => {
     const input = spec("tab");
     const result = await new HerdrTopologyManager(client).launch(input);
     expect(result.tabId).toBe("t-new");
-    expect(client.methods.slice(0, 3)).toEqual(["tab.create", "pane.process_info", "agent.start"]);
+    expect(client.methods.slice(0, 4)).toEqual(["tab.create", "pane.report_metadata", "pane.process_info", "agent.start"]);
     expect(client.methods.filter((method) => method === "pane.report_metadata")).toHaveLength(1);
     expect(input.onResource).toHaveBeenCalledWith(expect.objectContaining({ kind: "tab", id: "t-new" }));
+  });
+
+  it("records ownership before a startup failure can skip interactive_ready", async () => {
+    const client = requester("tab", true);
+    const input = spec("tab");
+
+    await expect(new HerdrTopologyManager(client).launch(input)).rejects.toThrow("startup failed");
+
+    expect(client.methods).toEqual([
+      "tab.create",
+      "pane.report_metadata",
+      "pane.process_info",
+      "agent.start",
+    ]);
+    expect(input.onResource).toHaveBeenCalledWith(expect.objectContaining({ kind: "tab", id: "t-new" }));
+    expect(input.onResource).toHaveBeenCalledWith(expect.objectContaining({ kind: "pane", id: "p-root" }));
+  });
+
+  it("waits for the delayed Herdr session hook after agent.start", async () => {
+    const client = requester("tab", false, 2);
+    const result = await new HerdrTopologyManager(client).launch(spec("tab"));
+
+    expect(result.paneId).toBe("p-root");
+    expect(client.methods.filter((method) => method === "agent.get")).toHaveLength(2);
   });
 
   it("records every worktree resource and tags its workspace", async () => {

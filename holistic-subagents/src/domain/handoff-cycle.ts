@@ -141,7 +141,10 @@ export class HandoffCycle {
 
   /**
    * Parent prompt: starts a new Handoff Cycle, records the answered question
-   * (if any), dispatches the follow-up and confirms the child is working.
+   * (if any), dispatches the follow-up. A persisted in-flight guard rejects a
+   * concurrent dispatch before any I/O. Initial launch is the only operation
+   * that waits for the working transition; a warm follow-up is reconciled
+   * from Herdr events/snapshots instead, and its ack never records working.
    */
   async dispatch(
     runId: string,
@@ -157,6 +160,16 @@ export class HandoffCycle {
         `RUN_TERMINAL: Run ${runId} is ${delegation.state}; use holistic_create for a new mission`,
       );
     }
+    if (delegation.handoff?.effectMayHaveOccurred) {
+      throw new Error(
+        `HANDOFF_RECONCILIATION_REQUIRED: Run ${runId} may already have received the follow-up`,
+      );
+    }
+    if (delegation.handoff?.dispatchPending) {
+      throw new Error(
+        `DISPATCH_IN_PROGRESS: Run ${runId} already has a follow-up dispatch in progress`,
+      );
+    }
     const now = new Date().toISOString();
     const cycleId = randomUUID();
     const mutated = this.#mutations.mutate(delegation.sessionId, (draft) => {
@@ -169,7 +182,12 @@ export class HandoffCycle {
           ? { ...question, answer: message, answeredAt: now }
           : question,
       );
-      draft.run = { ...beginHandoffCycle(run, cycleId, now), questions, updatedAt: now };
+      draft.run = {
+        ...beginHandoffCycle(run, cycleId, now),
+        handoff: { id: cycleId, dispatchPending: true },
+        questions,
+        updatedAt: now,
+      };
       return draft.run;
     }, { kinds: { run: options.questionId ? "question" : "transition" } });
     try {
@@ -182,24 +200,136 @@ export class HandoffCycle {
             {
               target: primaryPaneId(run),
               text: buildFollowUpPrompt(run, message, temporaryArtifactRoot(session)),
-              wait: { until: ["working"], timeout_ms: 30_000 },
             },
             { signal, timeoutMs: 35_000 },
           );
         },
         (draft) => {
-          draft.run = recordRuntimeStatus(draft.run!, "working");
-          draft.session = { ...draft.session, health: "working", updatedAt: draft.run.updatedAt };
+          // The agent.prompt ack confirms submission only; a correlated Herdr
+          // event/snapshot is the sole source of the working observation.
+          draft.run = {
+            ...draft.run!,
+            handoff: { ...draft.run!.handoff, dispatchPending: undefined },
+          };
           return draft.run;
         },
-        { run: "health", session: "health" },
+        { run: "health" },
       );
     } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "STALE_SESSION_MUTATION")) {
+      if (error instanceof Error && "code" in error && error.code === "STALE_SESSION_MUTATION") {
+        // The Session advanced while the prompt was in flight, so the child
+        // may have received it. Conclusive evidence for this cycle (a valid
+        // claim/question) clears the guard itself; without it the cycle
+        // becomes uncertain and re-delivery stays blocked.
+        this.#mutations.mutate(mutated.sessionId, (draft) => {
+          if (!draft.run || draft.run.id !== mutated.id || !draft.run.handoff?.dispatchPending) return;
+          const now = new Date().toISOString();
+          const failure = `agent.prompt delivery is uncertain after starting revision ${draft.run.revision}: ${errorMessage(error)}`;
+          draft.run = {
+            ...draft.run,
+            handoff: {
+              ...draft.run.handoff,
+              dispatchPending: undefined,
+              effectMayHaveOccurred: true,
+            },
+            failure,
+            health: "dispatch_uncertain",
+            updatedAt: now,
+          };
+          draft.session = {
+            ...draft.session,
+            health: "dispatch_uncertain",
+            failure,
+            updatedAt: now,
+          };
+        }, { kinds: { run: "health", session: "health" } });
+      } else {
         this.#failPromptDispatch(mutated, error);
       }
       throw error;
     }
+  }
+
+  /**
+   * Reconciles a timed-out follow-up. Complete delegation and ownership are
+   * required; the uncertain cycle is preserved until conclusive evidence (a
+   * valid claim for the current cycle) or explicit safe abandonment (manage
+   * fail/close). Pane existence, a missing claim, incomplete ownership,
+   * missing delegation metadata or diverged session/tab/workspace resources
+   * never clear effectMayHaveOccurred. The Herdr snapshot is fetched
+   * internally, never supplied by the caller.
+   */
+  async reconcileDispatch(runId: string): Promise<Delegation> {
+    const result = await this.#herdr.request<{ snapshot?: HerdrSnapshot }>(
+      "session.snapshot",
+      {},
+    );
+    const snapshot = result?.snapshot;
+    if (!snapshot || !Array.isArray(snapshot.panes)) {
+      throw new Error(`HANDOFF_RECONCILIATION_REQUIRED: Herdr snapshot is incomplete for ${runId}`);
+    }
+    const current = this.#repository.get(runId);
+    if (!current) throw new Error(`Unknown delegation: ${runId}`);
+    if (!current.handoff?.effectMayHaveOccurred) return current;
+    const session = this.#repository.getSession(current.sessionId);
+    if (!session || session.activeRunId !== runId) {
+      throw new Error(`HANDOFF_RECONCILIATION_REQUIRED: Run ${runId} is not the complete active Run`);
+    }
+    const paneResource = session.resources.find((resource) => resource.kind === "pane");
+    const pane = snapshot.panes?.find((candidate) => candidate.pane_id === paneResource?.id);
+    if (!paneResource || !pane) {
+      throw new Error(
+        `HANDOFF_RECONCILIATION_REQUIRED: owned pane of ${runId} is missing from the snapshot`,
+      );
+    }
+    const owner = pane.tokens?.owner;
+    if (typeof owner !== "string" || owner.length === 0
+      || owner !== paneResource.ownershipToken.slice(0, 32)) {
+      throw new Error(
+        `HANDOFF_RECONCILIATION_REQUIRED: ownership of ${runId} is incomplete or diverged`,
+      );
+    }
+    const delegationToken = pane.tokens?.delegation;
+    if (typeof delegationToken !== "string" || delegationToken.length === 0
+      || delegationToken !== session.ownershipId) {
+      throw new Error(
+        `HANDOFF_RECONCILIATION_REQUIRED: delegation metadata of ${runId} is incomplete or diverged`,
+      );
+    }
+    const tabResource = session.resources.find(
+      (resource) => resource.kind === "tab" && resource.id === pane.tab_id,
+    );
+    const workspaceResource = session.resources.find(
+      (resource) => resource.kind === "workspace" && resource.id === pane.workspace_id,
+    );
+    if (!tabResource || !workspaceResource) {
+      throw new Error(
+        `HANDOFF_RECONCILIATION_REQUIRED: topology of ${runId} does not match its owned pane`,
+      );
+    }
+    if (current.handoff.claimed) {
+      await this.#loadManifest(current, session);
+      return this.#mutations.mutate(current.sessionId, (draft) => {
+        if (!draft.run || draft.run.id !== runId || draft.session.activeRunId !== runId) {
+          throw new Error(`HANDOFF_RECONCILIATION_REQUIRED: Run ${runId} changed during reconciliation`);
+        }
+        const now = new Date().toISOString();
+        draft.run = {
+          ...draft.run,
+          handoff: {
+            ...draft.run.handoff,
+            dispatchPending: undefined,
+            effectMayHaveOccurred: undefined,
+          },
+          health: isAgentRuntimeStatus(pane.agent_status) ? pane.agent_status : "unknown",
+          updatedAt: now,
+        };
+        return draft.run;
+      }, { kinds: { run: "health" } });
+    }
+    throw new Error(
+      `HANDOFF_RECONCILIATION_REQUIRED: Run ${runId} remains uncertain; wait for a conclusive claim or abandon explicitly`,
+    );
   }
 
   /**
@@ -614,15 +744,16 @@ export class HandoffCycle {
       const now = new Date().toISOString();
       const failure = `agent.prompt failed after starting revision ${run.revision}: ${errorMessage(error)}`;
       draft.run = {
-        ...transitionDelegation(draft.run, "failed", now),
+        ...draft.run,
+        handoff: { ...draft.run.handoff, dispatchPending: undefined, effectMayHaveOccurred: true },
         failure,
-        health: "failed",
+        health: "dispatch_uncertain",
+        updatedAt: now,
       };
       draft.session = {
         ...draft.session,
-        state: "failed",
-        activeRunId: undefined,
-        health: "failed",
+        state: "busy",
+        health: "dispatch_uncertain",
         failure,
         updatedAt: now,
       };
@@ -705,7 +836,7 @@ function recordHandoffClaim(
 ): Delegation {
   if (claim?.cycleId && delegation.handoff?.id !== claim.cycleId) return delegation;
   if (!["starting", "working"].includes(delegation.state)) return delegation;
-  return settleHandoff({
+  return settleHandoff(clearDispatchUncertainty({
     ...delegation,
     handoff: {
       ...delegation.handoff,
@@ -716,7 +847,27 @@ function recordHandoffClaim(
     },
     acceptanceTicket: undefined,
     updatedAt: now,
-  }, now);
+  }), now);
+}
+
+/**
+ * Conclusive child evidence (a valid claim/question for the current cycle)
+ * clears the in-flight and uncertain dispatch markers. Anything weaker keeps
+ * the cycle preserved: re-delivery stays blocked until the child responds for
+ * this cycle or the parent abandons the Run explicitly.
+ */
+function clearDispatchUncertainty(delegation: Delegation): Delegation {
+  if (!delegation.handoff?.dispatchPending && !delegation.handoff?.effectMayHaveOccurred) {
+    return delegation;
+  }
+  return {
+    ...delegation,
+    handoff: {
+      ...delegation.handoff,
+      dispatchPending: undefined,
+      effectMayHaveOccurred: undefined,
+    },
+  };
 }
 
 /**
@@ -847,6 +998,7 @@ function reduceCallback(
     if (callback.kind === "input_required" && updated.state === "working") {
       updated = transitionDelegation(updated, "awaiting_input", now);
     }
+    updated = clearDispatchUncertainty(updated);
     return {
       matched: true,
       valid: true,
@@ -857,11 +1009,11 @@ function reduceCallback(
     };
   }
 
-  updated = recordHandoffClaim(updated, {
+  updated = clearDispatchUncertainty(recordHandoffClaim(updated, {
     cycleId: callback.cycleId,
     manifestId: callback.manifestId,
     manifestSha256: callback.manifestSha256,
-  }, now);
+  }, now));
   return {
     matched: true,
     valid: true,

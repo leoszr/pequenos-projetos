@@ -413,11 +413,13 @@ describe("HandoffCycle > new cycle and ticket invalidation", () => {
       state: "working",
       revision: 2,
       acceptanceTicket: undefined,
-      handoff: { working: true },
     });
+    expect(next.handoff?.working).toBeUndefined();
+    expect(next.handoff?.dispatchPending).toBeUndefined();
     expect(next.handoff!.id).not.toBe(oldCycle);
     expect(fx.cycle.handleCallbackInput(claimSignal(fx.run, { cycle: oldCycle })).reason)
       .toContain("stale");
+    await fx.cycle.onInfrastructureEvent(workingEvent());
 
     const claim = await publishManifest(fx, fx.repository.get(run.id)!);
     const claimed = fx.cycle.handleCallbackInput(
@@ -430,27 +432,209 @@ describe("HandoffCycle > new cycle and ticket invalidation", () => {
     expect(fx.cycle.accept(run.id).state).toBe("accepted");
   });
 
-  it("fails the Run and Session when a dispatch cannot be confirmed", async () => {
+  it("keeps the Run uncertain when a dispatch cannot be confirmed", async () => {
     const fx = await fixture();
     fx.requestMock.mockImplementationOnce(async () => {
       throw new Error("socket disconnected");
     });
 
     await expect(fx.cycle.dispatch("d1", "continue")).rejects.toThrow("socket disconnected");
-    expect(fx.repository.get("d1")).toMatchObject({
-      state: "failed",
-      health: "failed",
+    expect(fx.requestMock).toHaveBeenCalledWith("agent.prompt", expect.not.objectContaining({
+      wait: expect.anything(),
+    }), expect.anything());
+    const uncertain = fx.repository.get("d1")!;
+    expect(uncertain).toMatchObject({
+      state: "working",
+      health: "dispatch_uncertain",
+      handoff: { effectMayHaveOccurred: true },
       failure: expect.stringContaining("agent.prompt failed after starting revision 2"),
     });
+    expect(uncertain.handoff?.dispatchPending).toBeUndefined();
     expect(fx.repository.getSession("as1")).toMatchObject({
-      state: "failed",
-      activeRunId: undefined,
+      state: "busy",
+      activeRunId: "d1",
     });
+    await expect(fx.cycle.dispatch("d1", "retry")).rejects.toThrow("HANDOFF_RECONCILIATION_REQUIRED");
+  });
+
+  it("does not record working or settle from a follow-up ack alone", async () => {
+    const fx = await fixture();
+    const next = await fx.cycle.dispatch("d1", "continue");
+    expect(next.state).toBe("working");
+    expect(next.handoff?.working).toBeUndefined();
+    expect(next.handoff?.settled).toBeUndefined();
+    expect(next.handoff?.dispatchPending).toBeUndefined();
+
+    const afterIdle = await fx.cycle.onInfrastructureEvent(idleEvent());
+    expect(afterIdle?.state).toBe("working");
+    expect(afterIdle?.health).toBe("idle");
+    expect(afterIdle?.handoff?.working).toBeUndefined();
+    expect(afterIdle?.handoff?.settled).toBeUndefined();
+  });
+
+  it("keeps an uncertain dispatch blocked without conclusive evidence", async () => {
+    const fx = await fixture();
+    fx.requestMock.mockRejectedValueOnce(new Error("request timeout"));
+    await expect(fx.cycle.dispatch("d1", "continue")).rejects.toThrow("request timeout");
+
+    // Correlate the owned pane with its session tab/workspace resources so
+    // the metadata checks are the only remaining gate.
+    const session = fx.repository.getSession("as1")!;
+    fx.repository.saveSession({
+      ...session,
+      resources: [
+        { kind: "pane", id: "p1", createdByExtension: true, ownershipToken: "owner" },
+        { kind: "tab", id: "t", createdByExtension: true, ownershipToken: "owner" },
+        { kind: "workspace", id: "w", createdByExtension: true, ownershipToken: "owner" },
+      ],
+    }, "transition");
+
+    const completePane = {
+      pane_id: "p1",
+      workspace_id: "w",
+      tab_id: "t",
+      agent_status: "idle" as const,
+      tokens: { owner: "owner", delegation: "as1" },
+    };
+    const withSnapshot = (panes: unknown[]) => {
+      fx.requestMock.mockImplementationOnce(async (method: string) =>
+        method === "session.snapshot"
+          ? { snapshot: { protocol: 19, panes } }
+          : { type: "ok", pane: { agent_status: "idle" } },
+      );
+    };
+    // Pane present with complete metadata, but no claim: still uncertain.
+    withSnapshot([completePane]);
+    await expect(fx.cycle.reconcileDispatch("d1")).rejects.toThrow("HANDOFF_RECONCILIATION_REQUIRED");
+    // Pane missing from the snapshot: rejected.
+    withSnapshot([]);
+    await expect(fx.cycle.reconcileDispatch("d1")).rejects.toThrow("HANDOFF_RECONCILIATION_REQUIRED");
+    // Incomplete ownership (no owner token): rejected.
+    withSnapshot([{ ...completePane, tokens: undefined }]);
+    await expect(fx.cycle.reconcileDispatch("d1")).rejects.toThrow("HANDOFF_RECONCILIATION_REQUIRED");
+    // Divergent ownership: rejected.
+    withSnapshot([{ ...completePane, tokens: { owner: "other" } }]);
+    await expect(fx.cycle.reconcileDispatch("d1")).rejects.toThrow("HANDOFF_RECONCILIATION_REQUIRED");
+    // Incomplete delegation metadata: rejected.
+    withSnapshot([{ ...completePane, tokens: { owner: "owner" } }]);
+    await expect(fx.cycle.reconcileDispatch("d1")).rejects.toThrow("HANDOFF_RECONCILIATION_REQUIRED");
+    // Divergent delegation metadata: rejected.
+    withSnapshot([{ ...completePane, tokens: { owner: "owner", delegation: "other" } }]);
+    await expect(fx.cycle.reconcileDispatch("d1")).rejects.toThrow("HANDOFF_RECONCILIATION_REQUIRED");
+    // Session tab/workspace resources diverged from the pane: rejected.
+    fx.repository.saveSession({
+      ...fx.repository.getSession("as1")!,
+      resources: [
+        { kind: "pane", id: "p1", createdByExtension: true, ownershipToken: "owner" },
+        { kind: "tab", id: "other-tab", createdByExtension: true, ownershipToken: "owner" },
+        { kind: "workspace", id: "w", createdByExtension: true, ownershipToken: "owner" },
+      ],
+    }, "transition");
+    withSnapshot([completePane]);
+    await expect(fx.cycle.reconcileDispatch("d1")).rejects.toThrow("HANDOFF_RECONCILIATION_REQUIRED");
+
+    expect(fx.repository.get("d1")?.handoff?.effectMayHaveOccurred).toBe(true);
+    await expect(fx.cycle.dispatch("d1", "retry")).rejects.toThrow("HANDOFF_RECONCILIATION_REQUIRED");
+  });
+
+  it("releases an uncertain dispatch on a conclusive claim with complete metadata", async () => {
+    const fx = await fixture();
+    fx.requestMock.mockRejectedValueOnce(new Error("request timeout"));
+    await expect(fx.cycle.dispatch("d1", "continue")).rejects.toThrow("request timeout");
+
+    const uncertain = fx.repository.get("d1")!;
+    const claim = await publishManifest(fx, uncertain);
+    // Persist the conclusive claim alongside the uncertainty (crash/reload
+    // edge); the claim proves the child received the follow-up.
+    fx.repository.save({
+      ...uncertain,
+      handoff: {
+        ...uncertain.handoff,
+        claimed: true,
+        manifestId: claim.manifestId,
+        manifestSha256: claim.sha256,
+      },
+    }, "transition");
+    const session = fx.repository.getSession("as1")!;
+    fx.repository.saveSession({
+      ...session,
+      resources: [
+        { kind: "pane", id: "p1", createdByExtension: true, ownershipToken: "owner" },
+        { kind: "tab", id: "t", createdByExtension: true, ownershipToken: "owner" },
+        { kind: "workspace", id: "w", createdByExtension: true, ownershipToken: "owner" },
+      ],
+    }, "transition");
+
+    fx.requestMock.mockImplementationOnce(async (method: string) =>
+      method === "session.snapshot"
+        ? {
+            snapshot: {
+              protocol: 19,
+              panes: [{
+                pane_id: "p1",
+                workspace_id: "w",
+                tab_id: "t",
+                agent_status: "idle",
+                tokens: { owner: "owner", delegation: "as1" },
+              }],
+            },
+          }
+        : { type: "ok", pane: { agent_status: "idle" } },
+    );
+    const reconciled = await fx.cycle.reconcileDispatch("d1");
+    expect(reconciled.handoff?.effectMayHaveOccurred).toBeUndefined();
+    expect(reconciled.handoff?.dispatchPending).toBeUndefined();
+    expect(reconciled.handoff?.claimed).toBe(true);
+    expect(fx.repository.get("d1")?.health).toBe("idle");
+
+    const redelivered = await fx.cycle.dispatch("d1", "follow-up after recovery");
+    expect(redelivered.handoff?.effectMayHaveOccurred).toBeUndefined();
+  });
+
+  it("clears uncertainty only on a conclusive claim for the current cycle", async () => {
+    const fx = await fixture();
+    fx.requestMock.mockRejectedValueOnce(new Error("request timeout"));
+    await expect(fx.cycle.dispatch("d1", "continue")).rejects.toThrow("request timeout");
+    expect(fx.repository.get("d1")?.handoff?.effectMayHaveOccurred).toBe(true);
+
+    const claim = await publishManifest(fx, fx.repository.get("d1")!);
+    const claimed = fx.cycle.handleCallbackInput(
+      `[HOLISTIC_HANDOFF_READY] delegation=d1 pane=p1 token=secret-token cycle=${claim.cycleId} manifest=${claim.manifestId} sha256=${claim.sha256}`,
+    );
+    expect(claimed.valid).toBe(true);
+    expect(claimed.delegation?.handoff?.effectMayHaveOccurred).toBeUndefined();
+    expect(fx.repository.get("d1")?.handoff?.effectMayHaveOccurred).toBeUndefined();
+
+    const redelivered = await fx.cycle.dispatch("d1", "follow-up after conclusive claim");
+    expect(redelivered.handoff?.effectMayHaveOccurred).toBeUndefined();
   });
 });
 
 describe("HandoffCycle > dispatch concurrency", () => {
-  it("rejects with STALE_SESSION_MUTATION when the Sequence advances during dispatch", async () => {
+  it("persists an in-flight guard and rejects a concurrent dispatch without I/O", async () => {
+    const fx = await fixture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    fx.requestMock.mockImplementation(async (method: string) => {
+      if (method === "agent.prompt") await gate;
+      return { type: "ok", pane: { agent_status: "idle" } };
+    });
+
+    const first = fx.cycle.dispatch("d1", "first");
+    await Promise.resolve();
+    await expect(fx.cycle.dispatch("d1", "second")).rejects.toThrow("DISPATCH_IN_PROGRESS");
+    release();
+
+    await expect(first).resolves.toMatchObject({
+      state: "working",
+      handoff: { id: expect.any(String) },
+    });
+    const prompts = fx.requestMock.mock.calls.filter(([method]) => method === "agent.prompt");
+    expect(prompts).toHaveLength(1);
+    expect(fx.repository.get("d1")?.handoff?.dispatchPending).toBeUndefined();
+  });
+
+  it("keeps a stale dispatch uncertain unless conclusive evidence was persisted", async () => {
     const fx = await fixture();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -468,18 +652,50 @@ describe("HandoffCycle > dispatch concurrency", () => {
       code: "STALE_SESSION_MUTATION",
       effectMayHaveOccurred: true,
     });
-    expect(fx.repository.get("d1")).toMatchObject({
+    const stale = fx.repository.get("d1")!;
+    expect(stale).toMatchObject({
       state: "working",
-      health: "working",
+      health: "dispatch_uncertain",
       revision: 2,
-      handoff: { working: true },
+      handoff: { working: true, effectMayHaveOccurred: true },
     });
-    expect(fx.repository.get("d1")?.failure).toBeUndefined();
+    expect(stale.handoff?.dispatchPending).toBeUndefined();
+    expect(stale.failure).toContain("delivery is uncertain");
     expect(fx.repository.getSession("as1")).toMatchObject({
       state: "busy",
-      health: "working",
+      health: "dispatch_uncertain",
       activeRunId: "d1",
     });
+    await expect(fx.cycle.dispatch("d1", "retry")).rejects.toThrow("HANDOFF_RECONCILIATION_REQUIRED");
+  });
+
+  it("does not mark a stale dispatch uncertain when conclusive evidence was persisted", async () => {
+    const fx = await fixture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    fx.requestMock.mockImplementation(async (method: string) => {
+      if (method === "agent.prompt") await gate;
+      return { type: "ok", pane: { agent_status: "idle" } };
+    });
+
+    const pending = fx.cycle.dispatch("d1", "continue");
+    await Promise.resolve();
+    const claim = await publishManifest(fx, fx.repository.get("d1")!);
+    const claimed = fx.cycle.handleCallbackInput(
+      `[HOLISTIC_HANDOFF_READY] delegation=d1 pane=p1 token=secret-token cycle=${claim.cycleId} manifest=${claim.manifestId} sha256=${claim.sha256}`,
+    );
+    expect(claimed.valid).toBe(true);
+    release();
+
+    await expect(pending).rejects.toMatchObject({
+      code: "STALE_SESSION_MUTATION",
+      effectMayHaveOccurred: true,
+    });
+    const after = fx.repository.get("d1")!;
+    expect(after.handoff?.effectMayHaveOccurred).toBeUndefined();
+    expect(after.handoff?.claimed).toBe(true);
+    expect(after.handoff?.dispatchPending).toBeUndefined();
+    expect(after.failure).toBeUndefined();
   });
 });
 

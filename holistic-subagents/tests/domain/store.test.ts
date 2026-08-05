@@ -200,4 +200,113 @@ describe("delegation event store", () => {
     new DelegationRepository(memory);
     expect(memory.entries).toHaveLength(beforeRecovery + 1);
   });
+
+  it("promotes an orphaned in-flight dispatch to uncertain on reload", () => {
+    const memory = new InMemoryDelegationStore();
+    const writer = new DelegationRepository(memory);
+    writer.saveSession(session("busy"), "transition");
+    writer.save({
+      ...delegation,
+      state: "working",
+      health: "working",
+      revision: 2,
+      handoff: { id: "cycle-2", working: true, dispatchPending: true },
+    }, "transition");
+    const beforeRecovery = memory.entries.length;
+
+    const recovered = new DelegationRepository(memory);
+    const run = recovered.get(delegation.id)!;
+    expect(run).toMatchObject({
+      state: "working",
+      health: "dispatch_uncertain",
+      handoff: { working: true, effectMayHaveOccurred: true },
+    });
+    expect(run.handoff?.dispatchPending).toBeUndefined();
+    expect(run.failure).toContain("interrupted by a coordinator reload");
+    expect(recovered.getSession(delegation.sessionId)).toMatchObject({
+      state: "busy",
+      health: "dispatch_uncertain",
+      activeRunId: delegation.id,
+    });
+    expect(memory.entries).toHaveLength(beforeRecovery + 2);
+    new DelegationRepository(memory);
+    expect(memory.entries).toHaveLength(beforeRecovery + 2);
+  });
+
+  it("replay preserves a claimed handoff and keeps it uncertain", () => {
+    const memory = new InMemoryDelegationStore();
+    const writer = new DelegationRepository(memory);
+    writer.saveSession(session("busy"), "transition");
+    writer.save({
+      ...delegation,
+      state: "ready_for_review",
+      health: "ready_for_review",
+      handoff: {
+        id: "cycle-2",
+        working: true,
+        settled: true,
+        claimed: true,
+        manifestId: "manifest-1",
+        manifestSha256: "a".repeat(64),
+        dispatchPending: true,
+      },
+    }, "transition");
+    const beforeRecovery = memory.entries.length;
+
+    const recovered = new DelegationRepository(memory);
+    const run = recovered.get(delegation.id)!;
+    expect(run).toMatchObject({
+      state: "ready_for_review",
+      health: "dispatch_uncertain",
+      handoff: {
+        claimed: true,
+        settled: true,
+        manifestId: "manifest-1",
+        manifestSha256: "a".repeat(64),
+        effectMayHaveOccurred: true,
+      },
+    });
+    expect(run.handoff?.dispatchPending).toBeUndefined();
+    expect(run.failure).toContain("interrupted by a coordinator reload");
+    expect(recovered.getSession(delegation.sessionId)).toMatchObject({
+      state: "busy",
+      health: "dispatch_uncertain",
+      activeRunId: delegation.id,
+    });
+    expect(memory.entries).toHaveLength(beforeRecovery + 2);
+    new DelegationRepository(memory);
+    expect(memory.entries).toHaveLength(beforeRecovery + 2);
+  });
+
+  it("replay keeps retry blocked for an incomplete claim", () => {
+    const memory = new InMemoryDelegationStore();
+    const writer = new DelegationRepository(memory);
+    writer.saveSession(session("busy"), "transition");
+    writer.save({
+      ...delegation,
+      state: "working",
+      health: "working",
+      handoff: { id: "cycle-2", working: true, claimed: true, dispatchPending: true },
+    }, "transition");
+    const beforeRecovery = memory.entries.length;
+
+    const recovered = new DelegationRepository(memory);
+    const run = recovered.get(delegation.id)!;
+    expect(run).toMatchObject({
+      state: "working",
+      health: "dispatch_uncertain",
+      handoff: { claimed: true, effectMayHaveOccurred: true },
+    });
+    expect(run.handoff?.dispatchPending).toBeUndefined();
+    expect(run.handoff?.manifestId).toBeUndefined();
+    expect(run.failure).toContain("interrupted by a coordinator reload");
+    expect(recovered.getSession(delegation.sessionId)).toMatchObject({
+      state: "busy",
+      health: "dispatch_uncertain",
+      activeRunId: delegation.id,
+    });
+    expect(memory.entries).toHaveLength(beforeRecovery + 2);
+    new DelegationRepository(memory);
+    expect(memory.entries).toHaveLength(beforeRecovery + 2);
+  });
 });
