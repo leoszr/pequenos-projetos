@@ -38,9 +38,10 @@ Leitura de `src/pi/runtime.ts`, `src/domain/service.ts`, `src/protocol/brief.ts`
 - **Control plane**: `HerdrClient` fala **NDJSON** (uma mensagem JSON por
   linha, separada por `\n` — `takeMessages` faz split por linha e
   `JSON.parse`, com erro explícito "Herdr sent invalid NDJSON") sobre **Unix
-  domain socket** (`HERDR_SOCKET_PATH`); usa `pane.get`, `pane.read`,
-  `agent.prompt`, com subscriptions de `pane.agent_status_changed` em conexão
-  dedicada.
+  domain socket** (`HERDR_SOCKET_PATH`); usa `pane.get` e `agent.prompt`, com
+  subscriptions de `pane.agent_status_changed` em conexão dedicada. O
+  `pane.read` que a v1 usava para ler o pane foi removido em `17464b13` e não
+  faz parte do contrato atual.
 - **Mensagens pai → filho**: texto injetado na sessão do filho via
   `agent.prompt` (brief montado por `buildDelegationBrief` + follow-ups do
   `holistic_send`). O transcript completo do pai **não** é enviado por padrão
@@ -56,15 +57,18 @@ Leitura de `src/pi/runtime.ts`, `src/domain/service.ts`, `src/protocol/brief.ts`
   (`prepared → starting → working → awaiting_input → ready_for_review →
   correcting → working → accepted/failed/cancelled`), `questions[]`,
   `evidence[]` e uma
-  `Session Mutation Sequence` monotônica. `paneOutput` continua sendo apenas
-  diagnóstico (snapshot das últimas 240 linhas via `pane.read`).
+  `Session Mutation Sequence` monotônica. **Snapshot histórico da pesquisa,
+  acessado em 2026-08-02:** `paneOutput` era apenas diagnóstico (snapshot das
+  últimas 240 linhas via `pane.read`). Esse mecanismo foi removido em
+  `17464b13`; a versão atual não usa `pane.read` como transcript/fallback.
 - **Artifacts**: Runs novas usam manifests JSON versionados. O
   `ArtifactStore` cria roots privados temporários sob `os.tmpdir()` com
   `mkdtemp`, publica com temp-file + rename atômico e valida containment,
   symlinks, ownership, permissões, tamanho, media type e SHA-256. O callback
   carrega somente a identidade e o hash do manifest; `holistic_inspect` lê e
-  valida o manifest e os artifacts. Runs legadas continuam com o fallback do
-  pane.
+  valida o manifest e os artifacts. **Snapshot histórico:** “Runs legadas” e o
+  fallback do pane descreviam o fallback v1 antes de `17464b13`; v1 foi
+  removido e não há fallback por transcript no contrato atual.
 
 ---
 
@@ -329,9 +333,10 @@ Achados factuais que qualquer decisão deve considerar:
    sem descrever o mecanismo de observação do mailbox. Filesystem é passivo:
    sem socket/event/watch/poll, escrever um arquivo não acorda o pai. (2, 3.2,
    3.6, 3.8)
-9. **No holistic, parte do "file-like" é estruturada**: o pai ainda pode ler
-   diagnóstico via `pane.read` (snapshot de texto), mas Runs novas publicam
-   artifacts em roots registrados e os referenciam por `ArtifactRef`; arquivos
+9. **No holistic, parte do "file-like" é estruturada**: na v1 o pai lia
+   diagnóstico via `pane.read` (snapshot truncado de texto); isso foi removido
+   em `17464b13` — hoje as Runs publicam artifacts em roots registrados e os
+   referenciam por `ArtifactRef`, sem fallback por transcript; arquivos
    duráveis continuam no `cwd`/worktree da delegação e são auditados por
    caminho relativo e baseline Git.
 
@@ -356,8 +361,9 @@ a arquitetura atual convergem para um desenho híbrido, já implementado:
    quando a evidência for volumosa (logs longos, diffs, outputs de
    ferramentas), o filho grava no root temporário autorizado e o
    `HANDOFF_READY` carrega só a **referência** (ID + tamanho + hash + media
-   type). O `pane.read` truncado (240 linhas) não é mais o único canal de
-   evidência. O limite padrão é 8 MiB por artifact e 64 MiB por root.
+   type). Na v1 a evidência dependia do `pane.read` truncado (240 linhas); v1
+   foi removida em `17464b13` e o contrato atual não tem fallback por
+   transcript. O limite padrão é 8 MiB por artifact e 64 MiB por root.
 4. **Criação dos temporários com as APIs nativas, sem caminho previsível**:
    `os.tmpdir()` + `fs.mkdtemp()` por Session (diretório único e não
    previsível, modo 0700), arquivos 0600, escrita via temp + rename atômico e

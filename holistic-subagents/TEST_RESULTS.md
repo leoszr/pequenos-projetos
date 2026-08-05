@@ -1,15 +1,28 @@
-# Resultados de teste
+# Registro de verificações
 
-## Verificação automatizada atual
+Este arquivo é um ledger, não uma garantia de que os comandos foram executados
+no checkout atual. Cada registro informa SHA, data e ambiente conhecido.
 
-Data: 2026-08-03
+## Verificação automatizada — snapshot do núcleo atual
 
-- `npm run typecheck`: passou;
-- `npm test`: 18 arquivos, 135 testes, todos passaram;
-- `python scripts/validate.py`: passou para manifest híbrido, links, três
-  callbacks, Herdr schema/protocol e três modelos da política padrão;
-- `npm pack --dry-run`: 32 arquivos publicados, sem `node_modules`;
-- `npm audit --omit=dev`: nenhuma vulnerabilidade de runtime.
+- **SHA:** `17464b13475df6f6adfd5d813ea32cb57dd85bee`
+- **Data do snapshot:** 2026-08-05 (commit `17464b13`)
+- **Ambiente declarado:** Node.js `>=22.19.0`; Pi peer `>=0.79.0`; devDependency
+  `@earendil-works/pi-coding-agent` `^0.83.0`; Herdr requerido pelo README:
+  `0.7.5+/protocol 17`.
+- **Proveniência:** resultado registrado na auditoria desse SHA; **não foi
+  reexecutado nesta rodada documental**.
+
+Resultado registrado: `npm run check` passou, com `19` arquivos e `145` testes;
+`npm pack --dry-run` passou (32 arquivos, sem `node_modules`) e
+`npm audit --omit=dev` não encontrou vulnerabilidades de runtime. O `check`
+inclui `npm run typecheck`, `npm test` e `python scripts/validate.py`.
+
+O registro anterior de 2026-08-03, no SHA
+`262c50a51690f760a65e202fb8fbfca65a5097d4`, fica preservado como histórico:
+typecheck e 18 arquivos/135 testes passaram, assim como validate, pack e audit
+conforme anotado na versão anterior deste arquivo. Ele não descreve o estado
+posterior a `17464b13`.
 
 ## Auditoria histórica de compatibilidade: Herdr 0.7.5 / protocol 17
 
