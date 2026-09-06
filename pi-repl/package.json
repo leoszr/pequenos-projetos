@@ -1,0 +1,42 @@
+{
+  "name": "pi-repl-notebook",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "docs",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "deno lint src tests",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:integration": "node --import tsx --test tests/*.integration.ts"
+  },
+  "dependencies": {
+    "zeromq": "6.5.0",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "@types/node": "^22.19.0"
+  }
+}

@@ -1,0 +1,26 @@
+# NOTICE — pi-repl-notebook
+
+This extension was designed from concepts observed in two MIT-licensed
+reference projects. No reference implementation code was copied verbatim;
+only architectural ideas were adapted. See `docs/reference-map.md` for the
+dependency map and commit pins.
+
+## howaboua-pi-stuff (Igor Warzocha)
+
+- Copyright (c) 2026 Igor Warzocha, MIT
+- Commit `7021ae48e8efe36a3becc5830d529696ff798e5e` (`main`)
+- Concepts adapted: Deno Jupyter kernel management, tool bridge over
+  authenticated loopback HTTP, snapshot/checkpoint/profile/project-state
+  and journal formats, Code Mode composition with host preflight.
+- Deliberately not ported: V8/Rust host, providers, auth, adapters,
+  shell interception, voice/web extras.
+
+## prime-agent (Prime Intellect)
+
+- Copyright (c) 2025 Mario Zechner, Copyright (c) 2026 Prime Intellect, MIT
+- Commit `9c54a35dac3a2ad17910074d66664859ea175666` (`main`, v0.9.2)
+- Concepts adapted: versioned host/runtime protocol, per-execution output
+  attribution, interrupt-with-grace lifecycle, generation counters against
+  stale messages, best-effort per-variable snapshots with manifests.
+- Deliberately not ported: Python runtime, RLM, subagents, scheduler,
+  daemon, goals, heartbeats, model catalogs.
